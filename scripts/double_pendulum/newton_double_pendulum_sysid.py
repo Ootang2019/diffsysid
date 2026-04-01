@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
@@ -62,29 +61,46 @@ def point_mse_loss(pred: wp.array2d(dtype=float), target: wp.array2d(dtype=float
         dz = pred[tid, 2] - target[tid, 2]
         wp.atomic_add(loss, 0, (dx * dx + dy * dy + dz * dz) / float(steps * 3))
 
-
-@dataclass
-class IterationLog:
-    iteration: int
-    loss: float
-    rmse: float
-    param_value: float
-    grad: float
-
-
 FIT_PARAM_CHOICES = tuple(PARAM_SPECS.keys())
+ANGLE_PARAMS = {"init_angle_1", "init_angle_2"}
 
 
-def make_model_with_param(param_name: str, param_value: float, fixed: dict[str, float], requires_grad: bool):
+def resolve_fit_request(args):
+    fit_params = args.fit_params if args.fit_params is not None else ([args.fit_param] if args.fit_param is not None else None)
+    gt_values = args.gt_values if args.gt_values is not None else ([args.gt_value] if args.gt_value is not None else None)
+    init_values = args.init_values if args.init_values is not None else ([args.init_value] if args.init_value is not None else None)
+    if fit_params is None or gt_values is None or init_values is None:
+        raise ValueError("Specify either --fit-param/--gt-value/--init-value or --fit-params/--gt-values/--init-values.")
+    if not (len(fit_params) == len(gt_values) == len(init_values)):
+        raise ValueError("fit params, gt values, and init values must have the same length.")
+    if len(set(fit_params)) != len(fit_params):
+        raise ValueError("Duplicate fit params are not allowed.")
+    return list(fit_params), np.asarray(gt_values, dtype=np.float64), np.asarray(init_values, dtype=np.float64)
+
+
+def parameter_to_raw(name: str, value: float, angle_mode: str) -> float:
+    if angle_mode == "top_offset" and name in ANGLE_PARAMS:
+        return top_offset_to_raw_angle(value)
+    return float(value)
+
+
+def display_value(name: str, raw_value: float, angle_mode: str) -> float:
+    if angle_mode == "top_offset" and name in ANGLE_PARAMS:
+        return raw_angle_to_top_offset(raw_value)
+    return float(raw_value)
+
+
+def make_model_with_params(fit_params: list[str], param_values: np.ndarray, fixed: dict[str, float], requires_grad: bool):
     params = dict(fixed)
-    params[param_name] = float(param_value)
+    for name, value in zip(fit_params, param_values):
+        params[name] = float(value)
     model = make_model(requires_grad=requires_grad, **params)
-    grad_attr, grad_index = PARAM_SPECS[param_name]
-    return model, grad_attr, grad_index
+    grad_refs = [PARAM_SPECS[name] for name in fit_params]
+    return model, grad_refs
 
 
-def evaluate(target_traj: wp.array, param_name: str, param_value: float, fixed: dict[str, float], steps: int, dt: float):
-    model, grad_attr, grad_index = make_model_with_param(param_name, param_value, fixed, requires_grad=True)
+def evaluate(target_traj: wp.array, fit_params: list[str], param_values: np.ndarray, fixed: dict[str, float], steps: int, dt: float):
+    model, grad_refs = make_model_with_params(fit_params, param_values, fixed, requires_grad=True)
     solver = newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
     s0 = model.state(requires_grad=True)
     s1 = model.state(requires_grad=True)
@@ -107,25 +123,29 @@ def evaluate(target_traj: wp.array, param_name: str, param_value: float, fixed: 
 
     pred_np = pred.numpy()
     target_np = target_traj.numpy()
-    grad_np = getattr(model, grad_attr).grad.numpy()
+    grads: dict[str, float] = {}
+    for name, (grad_attr, grad_index) in zip(fit_params, grad_refs):
+        grads[name] = float(getattr(model, grad_attr).grad.numpy()[grad_index])
     out = {
         "loss": float(loss.numpy()[0]),
         "rmse": float(np.sqrt(np.mean((pred_np - target_np) ** 2))),
-        "grad": float(grad_np[grad_index]),
+        "grads": grads,
         "trajectory": pred_np,
     }
+    if len(fit_params) == 1:
+        out["grad"] = grads[fit_params[0]]
     tape.zero()
     return out
 
 
 def run(args):
-    angle_params = {"init_angle_1", "init_angle_2"}
-    gt_value_raw = top_offset_to_raw_angle(args.gt_value) if args.angle_mode == "top_offset" and args.fit_param in angle_params else args.gt_value
-    init_value_raw = top_offset_to_raw_angle(args.init_value) if args.angle_mode == "top_offset" and args.fit_param in angle_params else args.init_value
+    fit_params, gt_values_in, init_values_in = resolve_fit_request(args)
+    gt_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, gt_values_in)], dtype=np.float64)
+    init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
 
     fixed = {
-        "init_angle_1": top_offset_to_raw_angle(args.init_angle_1) if args.angle_mode == "top_offset" else args.init_angle_1,
-        "init_angle_2": top_offset_to_raw_angle(args.init_angle_2) if args.angle_mode == "top_offset" else args.init_angle_2,
+        "init_angle_1": parameter_to_raw("init_angle_1", args.init_angle_1, args.angle_mode),
+        "init_angle_2": parameter_to_raw("init_angle_2", args.init_angle_2, args.angle_mode),
         "init_angvel_1": args.init_angvel_1,
         "init_angvel_2": args.init_angvel_2,
         "joint1_armature": args.joint1_armature,
@@ -136,76 +156,102 @@ def run(args):
         "joint2_damping": args.joint2_damping,
     }
 
-    gt_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
+    gt_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
     gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
     gt_traj = wp.array(gt_traj_np, dtype=float)
 
-    param_value = init_value_raw
-    m = 0.0
-    v = 0.0
+    param_values = init_values_raw.copy()
+    m = np.zeros_like(param_values)
+    v = np.zeros_like(param_values)
     beta1 = 0.9
     beta2 = 0.999
     eps = 1e-8
 
-    history: list[IterationLog] = []
-    initial_metrics = evaluate(gt_traj, args.fit_param, param_value, fixed, args.steps, args.dt)
-    best = {"param_value": param_value, **initial_metrics}
+    history: list[dict] = []
+    initial_metrics = evaluate(gt_traj, fit_params, param_values, fixed, args.steps, args.dt)
+    best = {"param_values": param_values.copy(), **initial_metrics}
 
     for it in range(args.iters):
-        metrics = evaluate(gt_traj, args.fit_param, param_value, fixed, args.steps, args.dt)
-        history.append(IterationLog(it, metrics["loss"], metrics["rmse"], param_value, metrics["grad"]))
-        print(f"iter={it:03d} loss={metrics['loss']:.6e} rmse={metrics['rmse']:.6e} {args.fit_param}={param_value:.6f} grad={metrics['grad']:.6e}")
+        metrics = evaluate(gt_traj, fit_params, param_values, fixed, args.steps, args.dt)
+        history_entry = {
+            "iteration": it,
+            "loss": metrics["loss"],
+            "rmse": metrics["rmse"],
+            "param_values": {name: float(value) for name, value in zip(fit_params, param_values)},
+            "grads": metrics["grads"],
+        }
+        if len(fit_params) == 1:
+            history_entry["param_value"] = float(param_values[0])
+            history_entry["grad"] = float(metrics["grads"][fit_params[0]])
+        history.append(history_entry)
+        status = " ".join(f"{name}={value:.6f}" for name, value in zip(fit_params, param_values))
+        grad_status = " ".join(f"{name}_grad={metrics['grads'][name]:.6e}" for name in fit_params)
+        print(f"iter={it:03d} loss={metrics['loss']:.6e} rmse={metrics['rmse']:.6e} {status} {grad_status}")
         if metrics["loss"] < best["loss"]:
-            best = {"param_value": param_value, **metrics}
-        g = float(np.clip(metrics["grad"], -args.grad_clip, args.grad_clip))
+            best = {"param_values": param_values.copy(), **metrics}
+        g = np.clip(np.asarray([metrics["grads"][name] for name in fit_params], dtype=np.float64), -args.grad_clip, args.grad_clip)
         m = beta1 * m + (1.0 - beta1) * g
         v = beta2 * v + (1.0 - beta2) * (g * g)
         m_hat = m / (1.0 - beta1 ** (it + 1))
         v_hat = v / (1.0 - beta2 ** (it + 1))
-        param_value -= args.lr * m_hat / (np.sqrt(v_hat) + eps)
+        param_values -= args.lr * m_hat / (np.sqrt(v_hat) + eps)
 
-    final_metrics = evaluate(gt_traj, args.fit_param, param_value, fixed, args.steps, args.dt)
+    final_metrics = evaluate(gt_traj, fit_params, param_values, fixed, args.steps, args.dt)
     if final_metrics["loss"] > best["loss"]:
-        final_param_value = best["param_value"]
-        final_metrics = evaluate(gt_traj, args.fit_param, final_param_value, fixed, args.steps, args.dt)
+        final_param_values = best["param_values"].copy()
+        final_metrics = evaluate(gt_traj, fit_params, final_param_values, fixed, args.steps, args.dt)
         selection = "best_seen"
     else:
-        final_param_value = param_value
+        final_param_values = param_values.copy()
         selection = "last_iter"
 
-    def display_value(name: str, raw_value: float) -> float:
-        return raw_angle_to_top_offset(raw_value) if args.angle_mode == "top_offset" and name in angle_params else raw_value
-
-    gt_replay_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
-    init_replay_model, _, _ = make_model_with_param(args.fit_param, init_value_raw, fixed, requires_grad=False)
-    fit_replay_model, _, _ = make_model_with_param(args.fit_param, final_param_value, fixed, requires_grad=False)
+    gt_replay_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
+    init_replay_model, _ = make_model_with_params(fit_params, init_values_raw, fixed, requires_grad=False)
+    fit_replay_model, _ = make_model_with_params(fit_params, final_param_values, fixed, requires_grad=False)
     gt_q, gt_qd = rollout_joint_state_trajectory(gt_replay_model, args.steps, args.dt)
     init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, args.steps, args.dt)
     fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, args.steps, args.dt)
 
     fixed_display = {}
     for name, value in fixed.items():
-        if name == args.fit_param:
+        if name in fit_params:
             continue
         fixed_display[f"{name}_raw"] = value
-        fixed_display[name] = display_value(name, value)
+        fixed_display[name] = display_value(name, value, args.angle_mode)
+
+    def pack_param_section(raw_values: np.ndarray, *, include_metrics: dict | None = None, include_selection: str | None = None):
+        payload = {}
+        for name, raw_value in zip(fit_params, raw_values):
+            payload[name] = display_value(name, raw_value, args.angle_mode)
+            payload[f"{name}_raw"] = float(raw_value)
+        if include_metrics is not None:
+            payload["loss"] = include_metrics["loss"]
+            payload["rmse"] = include_metrics["rmse"]
+            if len(fit_params) == 1:
+                payload["grad"] = include_metrics["grads"][fit_params[0]]
+            else:
+                payload["grads"] = include_metrics["grads"]
+        if include_selection is not None:
+            payload["selection"] = include_selection
+        return payload
 
     result = {
         "asset": str(URDF_PATH),
         "import_path": "newton.ModelBuilder.add_urdf(...), finalize(...), SolverFeatherstone",
         "loss_observable": "world trajectory of the distal tip point (local point [0,0,-1] on the second link body)",
-        "fit_param": args.fit_param,
+        "fit_param": fit_params[0] if len(fit_params) == 1 else None,
+        "fit_params": fit_params,
         "angle_convention": {
             "mode": args.angle_mode,
             "raw_zero_meaning": "link hanging straight down",
             "raw_upright_angle": UPRIGHT_RAW_ANGLE,
             "top_offset_definition": "when mode=top_offset, reported angle = pi - raw_urdf_angle, so 0 means upright/top",
         },
-        "ground_truth": {args.fit_param: display_value(args.fit_param, gt_value_raw), f"{args.fit_param}_raw": gt_value_raw},
+        "ground_truth": pack_param_section(gt_values_raw),
         "fixed_parameters": fixed_display,
-        "initial_guess": {args.fit_param: display_value(args.fit_param, init_value_raw), f"{args.fit_param}_raw": init_value_raw, "loss": initial_metrics["loss"], "rmse": initial_metrics["rmse"]},
-        "final_fit": {args.fit_param: display_value(args.fit_param, final_param_value), f"{args.fit_param}_raw": final_param_value, "loss": final_metrics["loss"], "rmse": final_metrics["rmse"], "grad": final_metrics["grad"], "selection": selection},
-        "best_seen": {args.fit_param: display_value(args.fit_param, best["param_value"]), f"{args.fit_param}_raw": best["param_value"], "loss": best["loss"], "rmse": best["rmse"]},
+        "initial_guess": pack_param_section(init_values_raw, include_metrics=initial_metrics),
+        "final_fit": pack_param_section(final_param_values, include_metrics=final_metrics, include_selection=selection),
+        "best_seen": pack_param_section(best["param_values"], include_metrics=best),
         "config": vars(args),
         "replay": {
             "time": (np.arange(args.steps + 1, dtype=np.float32) * args.dt).tolist(),
@@ -215,7 +261,7 @@ def run(args):
                 "fit": {"joint_q": fit_q.tolist(), "joint_qd": fit_qd.tolist()},
             },
         },
-        "history": [asdict(x) for x in history],
+        "history": history,
         "target_trajectory": gt_traj_np.tolist(),
         "initial_prediction": initial_metrics["trajectory"].tolist(),
         "final_prediction": final_metrics["trajectory"].tolist(),
@@ -229,9 +275,12 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="URDF-imported double-pendulum sysID on one simple state parameter.")
-    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES, required=True)
-    p.add_argument("--gt-value", type=float, required=True)
-    p.add_argument("--init-value", type=float, required=True)
+    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES)
+    p.add_argument("--gt-value", type=float)
+    p.add_argument("--init-value", type=float)
+    p.add_argument("--fit-params", nargs="+", choices=FIT_PARAM_CHOICES)
+    p.add_argument("--gt-values", nargs="+", type=float)
+    p.add_argument("--init-values", nargs="+", type=float)
     p.add_argument("--init-angle-1", dest="init_angle_1", type=float, default=0.2)
     p.add_argument("--init-angle-2", dest="init_angle_2", type=float, default=0.1)
     p.add_argument("--angle-mode", choices=["urdf_raw", "top_offset"], default="urdf_raw")

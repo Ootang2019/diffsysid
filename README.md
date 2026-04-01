@@ -9,7 +9,10 @@ This repo currently focuses on three URDF-backed systems:
 
 Each system supports:
 - single-run sysid
+- multi-parameter single-run sysid
 - batch sysid with multi-start restarts
+- multi-parameter batch sysid
+- initial-state and dynamics-parameter fitting
 - summary generation
 - side-by-side `gt | init | fit` Newton renders
 
@@ -65,6 +68,14 @@ Conventions used throughout this repo:
 
 ### 1. Single-run sysid
 
+The single-run scripts support both:
+- scalar mode with `--fit-param`, `--gt-value`, `--init-value`
+- vector mode with `--fit-params`, `--gt-values`, `--init-values`
+
+You can fit either:
+- initial-state parameters such as `init_pole_angle`, `init_angle`, `init_angle_2`
+- dynamics parameters such as damping, stiffness, and armature
+
 Cartpole:
 
 ```bash
@@ -98,6 +109,54 @@ PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_sysid.py \
   --output-json outputs/newton_double_pendulum_sysid/result.json
 ```
 
+Multi-parameter example, cartpole:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/newton_cartpole_sysid.py \
+  --fit-params init_pole_angle pole_damping \
+  --gt-values 0.20 0.50 \
+  --init-values 0.60 1.00 \
+  --steps 60 \
+  --iters 40 \
+  --output-json outputs/newton_cartpole_sysid/multi_param_run.json
+```
+
+Multi-parameter example, pendulum:
+
+```bash
+PYTHONPATH=. python scripts/pendulum/newton_pendulum_sysid.py \
+  --fit-params init_angle hinge_stiffness \
+  --gt-values 0.20 8.0 \
+  --init-values 0.40 8.5 \
+  --steps 60 \
+  --iters 40 \
+  --output-json outputs/newton_pendulum_sysid/multi_param_run.json
+```
+
+Multi-parameter example, double pendulum:
+
+```bash
+PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_sysid.py \
+  --fit-params init_angle_2 joint2_stiffness \
+  --gt-values 0.10 8.0 \
+  --init-values 0.30 8.5 \
+  --steps 60 \
+  --iters 40 \
+  --output-json outputs/newton_double_pendulum_sysid/multi_param_run.json
+```
+
+Dynamics-parameter example, cartpole:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/newton_cartpole_sysid.py \
+  --fit-param pole_damping \
+  --gt-value 0.50 \
+  --init-value 1.00 \
+  --steps 60 \
+  --iters 40 \
+  --output-json outputs/newton_cartpole_sysid/dynamics_pole_damping_run.json
+```
+
 ### 2. Single-run summary and compare render
 
 Each per-robot `render_sysid_summary.py` wrapper does both:
@@ -105,6 +164,8 @@ Each per-robot `render_sysid_summary.py` wrapper does both:
 - generates `summary.png`
 - renders `gt`, `init`, and `fit`
 - stitches them into a compare GIF and MP4 under `compare/`
+
+The selected result JSON is a positional argument. Summaries and renders are written beside that file.
 
 Cartpole:
 
@@ -128,6 +189,8 @@ PYTHONPATH=. python scripts/double_pendulum/render_sysid_summary.py \
 ```
 
 ### 3. Batch sysid
+
+The batch scripts also support both scalar and multi-parameter fitting. In batch mode, each environment carries its own candidate parameter vector and elite restart operates on that full vector.
 
 Cartpole:
 
@@ -163,6 +226,58 @@ PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_batch_sysid.p
   --env-count 8 \
   --iters 40 \
   --output-json outputs/newton_double_pendulum_batch_sysid/result.json
+```
+
+Multi-parameter example, cartpole batch:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/newton_cartpole_batch_sysid.py \
+  --fit-params init_pole_angle pole_damping \
+  --gt-values 0.20 0.50 \
+  --init-values 0.60 1.00 \
+  --init-span 0.2 \
+  --env-count 8 \
+  --iters 20 \
+  --output-json outputs/newton_cartpole_batch_sysid/multi_param_run.json
+```
+
+Multi-parameter example, pendulum batch:
+
+```bash
+PYTHONPATH=. python scripts/pendulum/newton_pendulum_batch_sysid.py \
+  --fit-params init_angle hinge_stiffness \
+  --gt-values 0.20 8.0 \
+  --init-values 0.40 8.5 \
+  --init-span 0.3 \
+  --env-count 8 \
+  --iters 20 \
+  --output-json outputs/newton_pendulum_batch_sysid/multi_param_run.json
+```
+
+Multi-parameter example, double pendulum batch:
+
+```bash
+PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_batch_sysid.py \
+  --fit-params init_angle_2 joint2_stiffness \
+  --gt-values 0.10 8.0 \
+  --init-values 0.30 8.5 \
+  --init-span 0.3 \
+  --env-count 8 \
+  --iters 20 \
+  --output-json outputs/newton_double_pendulum_batch_sysid/multi_param_run.json
+```
+
+Dynamics-parameter example, pendulum batch:
+
+```bash
+PYTHONPATH=. python scripts/pendulum/newton_pendulum_batch_sysid.py \
+  --fit-param hinge_stiffness \
+  --gt-value 8.0 \
+  --init-value 8.5 \
+  --init-span 0.3 \
+  --env-count 8 \
+  --iters 20 \
+  --output-json outputs/newton_pendulum_batch_sysid/dynamics_hinge_stiffness_run.json
 ```
 
 ### 4. Batch summary and compare render
@@ -207,6 +322,11 @@ Current fit parameters:
 
 Single-run and batch workflows both write artifacts next to the selected `result.json`.
 
+The summary wrappers accept any result JSON path, for example:
+- `outputs/newton_cartpole_sysid/result.json`
+- `outputs/newton_cartpole_sysid/multi_param_run.json`
+- `outputs/newton_cartpole_batch_sysid/multi_param_run.json`
+
 Expected artifacts:
 - `result.json`
 - `summary.json`
@@ -234,6 +354,11 @@ Batch runs use the same layout pattern under:
 - `outputs/newton_cartpole_batch_sysid/`
 - `outputs/newton_pendulum_batch_sysid/`
 - `outputs/newton_double_pendulum_batch_sysid/`
+
+Current behavior:
+- summary wrappers always write `summary.json` and `summary.png` to the result file's parent directory
+- running a summary wrapper on a different result file in the same folder will overwrite the previous summary artifacts
+- the underlying result JSON files are not overwritten unless you reuse the same `--output-json`
 
 ## Lower-level render helpers
 
@@ -265,5 +390,6 @@ If rendering works but GIF/MP4 generation fails, verify `ffmpeg` is installed an
 ## Notes
 
 - Angle handling may depend on the script's `--angle-mode` option when applicable.
-- The current workflows fit one parameter at a time against trajectory loss, including both initial-state and selected joint dynamics parameters.
+- The current workflows support both one-parameter and multi-parameter fitting against trajectory loss.
+- Multi-parameter results store `fit_params` plus per-parameter values and gradients in the JSON output.
 - Summary wrappers are the main user-facing interface for generating plots and comparison renders from a finished result.

@@ -17,38 +17,31 @@ from batch_sysid_common import annealed_noise_scale, apply_elite_restarts, compu
 from newton_double_pendulum_sysid import (
     FIT_PARAM_CHOICES,
     evaluate,
-    make_model_with_param,
+    make_model_with_params,
+    parameter_to_raw,
+    resolve_fit_request,
     rollout_joint_state_trajectory,
     rollout_tip_trajectory,
-    top_offset_to_raw_angle,
-    raw_angle_to_top_offset,
+    display_value,
 )
 from util import URDF_PATH
 
 
-ANGLE_PARAMS = {"init_angle_1", "init_angle_2"}
-
-
-def display_value(name: str, raw_value: float, angle_mode: str) -> float:
-    if angle_mode == "top_offset" and name in ANGLE_PARAMS:
-        return raw_angle_to_top_offset(raw_value)
-    return raw_value
-
-
-def evaluate_population(target_traj, fit_param: str, raw_params: np.ndarray, fixed: dict[str, float], steps: int, dt: float):
-    metrics = [evaluate(target_traj, fit_param, float(param), fixed, steps, dt) for param in raw_params]
+def evaluate_population(target_traj, fit_params: list[str], raw_params: np.ndarray, fixed: dict[str, float], steps: int, dt: float):
+    metrics = [evaluate(target_traj, fit_params, np.asarray(param, dtype=np.float64), fixed, steps, dt) for param in raw_params]
     losses = np.asarray([m["loss"] for m in metrics], dtype=np.float64)
     rmses = np.asarray([m["rmse"] for m in metrics], dtype=np.float64)
-    grads = np.asarray([m["grad"] for m in metrics], dtype=np.float64)
+    grads = np.asarray([[m["grads"][name] for name in fit_params] for m in metrics], dtype=np.float64)
     return metrics, losses, rmses, grads
 
 
 def run(args):
-    gt_value_raw = top_offset_to_raw_angle(args.gt_value) if args.angle_mode == "top_offset" and args.fit_param in ANGLE_PARAMS else args.gt_value
-    init_value_raw = top_offset_to_raw_angle(args.init_value) if args.angle_mode == "top_offset" and args.fit_param in ANGLE_PARAMS else args.init_value
+    fit_params, gt_values_in, init_values_in = resolve_fit_request(args)
+    gt_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, gt_values_in)], dtype=np.float64)
+    init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
     fixed = {
-        "init_angle_1": top_offset_to_raw_angle(args.init_angle_1) if args.angle_mode == "top_offset" else args.init_angle_1,
-        "init_angle_2": top_offset_to_raw_angle(args.init_angle_2) if args.angle_mode == "top_offset" else args.init_angle_2,
+        "init_angle_1": parameter_to_raw("init_angle_1", args.init_angle_1, args.angle_mode),
+        "init_angle_2": parameter_to_raw("init_angle_2", args.init_angle_2, args.angle_mode),
         "init_angvel_1": args.init_angvel_1,
         "init_angvel_2": args.init_angvel_2,
         "joint1_armature": args.joint1_armature,
@@ -59,40 +52,44 @@ def run(args):
         "joint2_damping": args.joint2_damping,
     }
 
-    gt_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
+    gt_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
     gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
     gt_traj = wp.array(gt_traj_np, dtype=float)
 
     rng = np.random.default_rng(args.seed)
-    raw_params = init_value_raw + rng.uniform(-args.init_span, args.init_span, size=args.env_count)
-    raw_params[0] = init_value_raw
+    init_span = np.asarray(args.init_span, dtype=np.float64)
+    if init_span.ndim == 0:
+        init_span = np.full(len(fit_params), float(init_span))
+    raw_params = init_values_raw[None, :] + rng.uniform(-init_span, init_span, size=(args.env_count, len(fit_params)))
+    raw_params[0] = init_values_raw
     init_raw_params = raw_params.copy()
     moment1 = np.zeros_like(raw_params)
     moment2 = np.zeros_like(raw_params)
 
     history: list[dict] = []
-    initial_metrics, initial_losses, initial_rmses, _ = evaluate_population(gt_traj, args.fit_param, raw_params, fixed, args.steps, args.dt)
+    initial_metrics, initial_losses, initial_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
     initial_best_idx = int(np.argmin(initial_losses))
-    best = {"param_value": float(raw_params[initial_best_idx]), "metrics": initial_metrics[initial_best_idx], "env_index": initial_best_idx, "iteration": -1}
+    best = {"param_values": raw_params[initial_best_idx].copy(), "metrics": initial_metrics[initial_best_idx], "env_index": initial_best_idx, "iteration": -1}
 
     beta1 = 0.9
     beta2 = 0.999
     eps = 1e-8
-    target_params = np.full(args.env_count, gt_value_raw, dtype=np.float64)
+    target_params = np.broadcast_to(gt_values_raw[None, :], raw_params.shape)
 
     for it in range(args.iters):
-        metrics, env_loss, env_rmse, env_grad = evaluate_population(gt_traj, args.fit_param, raw_params, fixed, args.steps, args.dt)
+        metrics, env_loss, env_rmse, env_grad = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
         best_idx = int(np.argmin(env_loss))
         if env_loss[best_idx] < best["metrics"]["loss"]:
-            best = {"param_value": float(raw_params[best_idx]), "metrics": metrics[best_idx], "env_index": best_idx, "iteration": it}
+            best = {"param_values": raw_params[best_idx].copy(), "metrics": metrics[best_idx], "env_index": best_idx, "iteration": it}
         pop = compute_population_metrics(raw_params, target_params, env_loss, args.collapse_tol)
+        best_params = {name: float(raw_params[best_idx, i]) for i, name in enumerate(fit_params)}
         history.append(
             {
                 "iteration": it,
                 "best_env_index": best_idx,
                 "best_loss": float(env_loss[best_idx]),
                 "best_rmse": float(env_rmse[best_idx]),
-                "best_param_value": float(raw_params[best_idx]),
+                "best_param_values": best_params,
                 "median_loss": pop.median_env_loss,
                 "worst_loss": pop.worst_env_loss,
                 "population_std": pop.population_std,
@@ -101,7 +98,10 @@ def run(args):
                 "within_tol_fraction": pop.within_tol_fraction,
             }
         )
-        print(f"iter={it:03d} best_loss={env_loss[best_idx]:.6e} median_loss={pop.median_env_loss:.6e} best_rmse={env_rmse[best_idx]:.6e} best_{args.fit_param}={raw_params[best_idx]:.6f}")
+        if len(fit_params) == 1:
+            history[-1]["best_param_value"] = float(raw_params[best_idx, 0])
+        best_status = " ".join(f"{name}={raw_params[best_idx, i]:.6f}" for i, name in enumerate(fit_params))
+        print(f"iter={it:03d} best_loss={env_loss[best_idx]:.6e} median_loss={pop.median_env_loss:.6e} best_rmse={env_rmse[best_idx]:.6e} {best_status}")
 
         grad = np.clip(env_grad, -args.grad_clip, args.grad_clip)
         moment1 = beta1 * moment1 + (1.0 - beta1) * grad
@@ -130,29 +130,46 @@ def run(args):
         if restart is not None:
             history[-1]["restart_event"] = {"restarted_envs": restart.restarted_envs, "parent_envs": restart.parent_envs, "elite_envs": restart.elite_envs, "random_restart_envs": restart.random_restart_envs, "noise_scale": restart.noise_scale}
 
-    final_metrics_all, final_losses, final_rmses, _ = evaluate_population(gt_traj, args.fit_param, raw_params, fixed, args.steps, args.dt)
+    final_metrics_all, final_losses, final_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
     final_best_idx = int(np.argmin(final_losses))
     if final_losses[final_best_idx] < best["metrics"]["loss"]:
-        best = {"param_value": float(raw_params[final_best_idx]), "metrics": final_metrics_all[final_best_idx], "env_index": final_best_idx, "iteration": args.iters}
+        best = {"param_values": raw_params[final_best_idx].copy(), "metrics": final_metrics_all[final_best_idx], "env_index": final_best_idx, "iteration": args.iters}
 
-    init_param = float(init_raw_params[initial_best_idx])
-    fit_param = float(best["param_value"])
+    init_param_values = init_raw_params[initial_best_idx].copy()
+    fit_param_values = best["param_values"].copy()
 
-    gt_replay_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
-    init_replay_model, _, _ = make_model_with_param(args.fit_param, init_param, fixed, requires_grad=False)
-    fit_replay_model, _, _ = make_model_with_param(args.fit_param, fit_param, fixed, requires_grad=False)
+    gt_replay_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
+    init_replay_model, _ = make_model_with_params(fit_params, init_param_values, fixed, requires_grad=False)
+    fit_replay_model, _ = make_model_with_params(fit_params, fit_param_values, fixed, requires_grad=False)
     gt_q, gt_qd = rollout_joint_state_trajectory(gt_replay_model, args.steps, args.dt)
     init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, args.steps, args.dt)
     fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, args.steps, args.dt)
 
+    def pack_param_section(raw_values: np.ndarray, *, include_metrics: dict | None = None, env_index: int | None = None):
+        payload = {}
+        for i, name in enumerate(fit_params):
+            payload[name] = display_value(name, raw_values[i], args.angle_mode)
+            payload[f"{name}_raw"] = float(raw_values[i])
+        if include_metrics is not None:
+            payload["loss"] = float(include_metrics["loss"])
+            payload["rmse"] = float(include_metrics["rmse"])
+            if len(fit_params) == 1:
+                payload["grad"] = float(include_metrics["grads"][fit_params[0]])
+            else:
+                payload["grads"] = include_metrics["grads"]
+        if env_index is not None:
+            payload["env_index"] = int(env_index)
+        return payload
+
     result = {
         "asset": str(URDF_PATH),
-        "fit_param": args.fit_param,
+        "fit_param": fit_params[0] if len(fit_params) == 1 else None,
+        "fit_params": fit_params,
         "angle_convention": {"mode": args.angle_mode, "raw_zero_meaning": "link hanging straight down", "raw_upright_angle": float(np.pi)},
-        "ground_truth": {args.fit_param: display_value(args.fit_param, gt_value_raw, args.angle_mode), f"{args.fit_param}_raw": gt_value_raw},
-        "initial_guess": {args.fit_param: display_value(args.fit_param, init_param, args.angle_mode), f"{args.fit_param}_raw": init_param, "loss": float(initial_losses[initial_best_idx]), "rmse": float(initial_rmses[initial_best_idx]), "env_index": initial_best_idx},
-        "initial_population": {"center_raw": init_value_raw, "span": args.init_span, "env_count": args.env_count, "raw_params": init_raw_params.astype(float).tolist()},
-        "final_fit": {args.fit_param: display_value(args.fit_param, fit_param, args.angle_mode), f"{args.fit_param}_raw": fit_param, "loss": float(best["metrics"]["loss"]), "rmse": float(best["metrics"]["rmse"]), "grad": float(best["metrics"]["grad"]), "best_env_index": best["env_index"], "best_iteration": best["iteration"]},
+        "ground_truth": pack_param_section(gt_values_raw),
+        "initial_guess": pack_param_section(init_param_values, include_metrics=initial_metrics[initial_best_idx], env_index=initial_best_idx),
+        "initial_population": {"center_raw": init_values_raw.astype(float).tolist(), "span": init_span.astype(float).tolist(), "env_count": args.env_count, "raw_params": init_raw_params.astype(float).tolist()},
+        "final_fit": {**pack_param_section(fit_param_values, include_metrics=best["metrics"]), "best_env_index": best["env_index"], "best_iteration": best["iteration"]},
         "final_population": {"raw_params": raw_params.astype(float).tolist(), "best_env_index": final_best_idx, "best_loss": float(final_losses[final_best_idx]), "best_rmse": float(final_rmses[final_best_idx])},
         "config": vars(args),
         "history": history,
@@ -169,9 +186,12 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Shared-population batch sysID for the URDF double pendulum.")
-    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES, required=True)
-    p.add_argument("--gt-value", type=float, required=True)
-    p.add_argument("--init-value", type=float, required=True)
+    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES)
+    p.add_argument("--gt-value", type=float)
+    p.add_argument("--init-value", type=float)
+    p.add_argument("--fit-params", nargs="+", choices=FIT_PARAM_CHOICES)
+    p.add_argument("--gt-values", nargs="+", type=float)
+    p.add_argument("--init-values", nargs="+", type=float)
     p.add_argument("--init-span", type=float, default=0.25)
     p.add_argument("--init-angle-1", dest="init_angle_1", type=float, default=0.2)
     p.add_argument("--init-angle-2", dest="init_angle_2", type=float, default=0.1)

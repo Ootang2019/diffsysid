@@ -28,6 +28,14 @@ COLORS = {
 FONT_BIG = load_font(30)
 FONT = load_font(20)
 FONT_SMALL = load_font(16)
+PARAM_LINE_COLORS = [
+    (52, 152, 219),
+    (230, 126, 34),
+    (46, 204, 113),
+    (155, 89, 182),
+    (241, 196, 15),
+    (231, 76, 60),
+]
 
 
 def map_point(x: float, y: float, bounds: tuple[float, float, float, float], rect: tuple[float, float, float, float]):
@@ -63,8 +71,23 @@ def load_result(path: Path) -> dict:
     return json.loads(path.read_text())
 
 
+def get_fit_params(data: dict) -> list[str]:
+    fit_params = data.get("fit_params")
+    if fit_params:
+        return list(fit_params)
+    fit_param = data.get("fit_param")
+    if fit_param is None:
+        raise KeyError("Result JSON must contain fit_param or fit_params.")
+    return [fit_param]
+
+
+def extract_param_map(section: dict, fit_params: list[str], *, raw: bool = False) -> dict[str, float | None]:
+    suffix = "_raw" if raw else ""
+    return {name: section.get(f"{name}{suffix}") for name in fit_params}
+
+
 def build_summary(data: dict, result_path: Path) -> dict:
-    fit_param = data["fit_param"]
+    fit_params = get_fit_params(data)
     initial = data["initial_guess"]
     final = data["final_fit"]
     best = data.get("best_seen", final)
@@ -82,21 +105,22 @@ def build_summary(data: dict, result_path: Path) -> dict:
     summary = {
         "result_json": str(result_path),
         "system": result_path.parent.name,
-        "fit_param": fit_param,
+        "fit_param": fit_params[0] if len(fit_params) == 1 else None,
+        "fit_params": fit_params,
         "asset": data["asset"],
         "angle_convention": data.get("angle_convention"),
         "config": data["config"],
         "parameter_values": {
-            "ground_truth": gt[fit_param],
-            "initial": initial[fit_param],
-            "final": final[fit_param],
-            "best_seen": best[fit_param],
+            "ground_truth": extract_param_map(gt, fit_params),
+            "initial": extract_param_map(initial, fit_params),
+            "final": extract_param_map(final, fit_params),
+            "best_seen": extract_param_map(best, fit_params),
         },
         "raw_parameter_values": {
-            "ground_truth": gt.get(f"{fit_param}_raw"),
-            "initial": initial.get(f"{fit_param}_raw"),
-            "final": final.get(f"{fit_param}_raw"),
-            "best_seen": best.get(f"{fit_param}_raw"),
+            "ground_truth": extract_param_map(gt, fit_params, raw=True),
+            "initial": extract_param_map(initial, fit_params, raw=True),
+            "final": extract_param_map(final, fit_params, raw=True),
+            "best_seen": extract_param_map(best, fit_params, raw=True),
         },
         "metrics": {
             "initial_loss": initial_loss,
@@ -109,7 +133,7 @@ def build_summary(data: dict, result_path: Path) -> dict:
             "rmse_improvement": initial_rmse - final_rmse,
             "loss_improvement_ratio": None if initial_loss == 0.0 else (initial_loss - final_loss) / initial_loss,
             "rmse_improvement_ratio": None if initial_rmse == 0.0 else (initial_rmse - final_rmse) / initial_rmse,
-            "final_grad": float(final["grad"]),
+            "final_grad": final.get("grads", final.get("grad")),
             "selection": final.get("selection", "best_env"),
         },
         "tip_trajectory": {
@@ -135,17 +159,20 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
     init_pred = np.asarray(data["initial_prediction"], dtype=float)
     final_pred = np.asarray(data["final_prediction"], dtype=float)
     hist = data["history"]
-    fit_param = data["fit_param"]
+    fit_params = get_fit_params(data)
 
     img = Image.new("RGB", (W, H), BG)
     draw = ImageDraw.Draw(img)
     draw.text((28, 18), f"{summary['system']} sysID summary", fill=TEXT, font=FONT_BIG)
-    subtitle = (
-        f"fit param={fit_param} | GT={summary['parameter_values']['ground_truth']:.6f} | "
-        f"Init={summary['parameter_values']['initial']:.6f} | "
-        f"Fit={summary['parameter_values']['final']:.6f} | "
-        f"Final RMSE={summary['metrics']['final_rmse']:.3e}"
-    )
+    subtitle_parts = []
+    for name in fit_params[:3]:
+        subtitle_parts.append(
+            f"{name}: GT={summary['parameter_values']['ground_truth'][name]:.4f}, "
+            f"Init={summary['parameter_values']['initial'][name]:.4f}, "
+            f"Fit={summary['parameter_values']['final'][name]:.4f}"
+        )
+    subtitle_parts.append(f"Final RMSE={summary['metrics']['final_rmse']:.3e}")
+    subtitle = " | ".join(subtitle_parts)
     draw.text((28, 58), subtitle, fill=MUTED, font=FONT)
 
     rect_loss = (28, 110, 720, 470)
@@ -169,19 +196,41 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
         draw.text((plot_loss[0] + 10, plot_loss[1] + 10), "Loss", fill=COLORS["Loss"], font=FONT_SMALL)
         draw.text((plot_loss[0] + 70, plot_loss[1] + 10), "RMSE", fill=COLORS["RMSE"], font=FONT_SMALL)
 
-        param_hist = np.array([h.get("param_value", h.get("best_param_value")) for h in hist], dtype=float)
-        param_vals = [
-            float(summary["parameter_values"]["ground_truth"]),
-            float(summary["parameter_values"]["initial"]),
-            float(summary["parameter_values"]["final"]),
-            float(param_hist.min()),
-            float(param_hist.max()),
-        ]
-        param_bounds = (0.0, max(1.0, float(iters[-1])), min(param_vals) - 0.05, max(param_vals) + 0.05)
-        plot_param = draw_axes(draw, rect_param, "iteration", fit_param)
-        draw_polyline(draw, iters, param_hist, param_bounds, plot_param, COLORS["Fit"])
-        draw_horizontal(draw, float(summary["parameter_values"]["ground_truth"]), param_bounds, plot_param, COLORS["GT"], "GT")
-        draw_horizontal(draw, float(summary["parameter_values"]["initial"]), param_bounds, plot_param, COLORS["Init"], "Init")
+        param_histories = []
+        for name in fit_params:
+            values = []
+            for h in hist:
+                if "param_values" in h:
+                    values.append(h["param_values"][name])
+                elif "best_param_values" in h:
+                    values.append(h["best_param_values"][name])
+                elif "param_value" in h:
+                    values.append(h["param_value"])
+                else:
+                    values.append(h["best_param_value"])
+            param_histories.append(np.array(values, dtype=float))
+        all_param_vals = []
+        for i, name in enumerate(fit_params):
+            all_param_vals.extend(param_histories[i].tolist())
+            all_param_vals.extend(
+                [
+                    float(summary["parameter_values"]["ground_truth"][name]),
+                    float(summary["parameter_values"]["initial"][name]),
+                    float(summary["parameter_values"]["final"][name]),
+                ]
+            )
+        ymin = min(all_param_vals)
+        ymax = max(all_param_vals)
+        pad = max(0.05, 0.05 * max(1e-6, ymax - ymin))
+        param_bounds = (0.0, max(1.0, float(iters[-1])), ymin - pad, ymax + pad)
+        plot_param = draw_axes(draw, rect_param, "iteration", "fit parameters")
+        legend_y = plot_param[1] + 10
+        for i, name in enumerate(fit_params):
+            color = PARAM_LINE_COLORS[i % len(PARAM_LINE_COLORS)]
+            draw_polyline(draw, iters, param_histories[i], param_bounds, plot_param, color)
+            draw_horizontal(draw, float(summary["parameter_values"]["ground_truth"][name]), param_bounds, plot_param, color, name)
+            draw.text((plot_param[0] + 10, legend_y), name, fill=color, font=FONT_SMALL)
+            legend_y += 18
 
     all_x = np.concatenate([target[:, 0], init_pred[:, 0], final_pred[:, 0], np.array([0.0])])
     all_z = np.concatenate([target[:, 2], init_pred[:, 2], final_pred[:, 2], np.array([0.0])])
@@ -199,12 +248,16 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
     draw.text((plot_tip[0] + 55, plot_tip[1] + 10), "Init", fill=COLORS["Init"], font=FONT_SMALL)
     draw.text((plot_tip[0] + 110, plot_tip[1] + 10), "Fit", fill=COLORS["Fit"], font=FONT_SMALL)
 
-    text_lines = [
-        f"Fit parameter: {fit_param}",
-        f"GT: {summary['parameter_values']['ground_truth']:.6f}",
-        f"Init: {summary['parameter_values']['initial']:.6f}",
-        f"Final fit: {summary['parameter_values']['final']:.6f}",
-        f"Best seen: {summary['parameter_values']['best_seen']:.6f}",
+    text_lines = []
+    for name in fit_params:
+        text_lines.extend(
+            [
+                f"{name} GT: {summary['parameter_values']['ground_truth'][name]:.6f}",
+                f"{name} Init: {summary['parameter_values']['initial'][name]:.6f}",
+                f"{name} Fit: {summary['parameter_values']['final'][name]:.6f}",
+            ]
+        )
+    text_lines.extend([
         f"Initial loss: {summary['metrics']['initial_loss']:.3e}",
         f"Final loss: {summary['metrics']['final_loss']:.3e}",
         f"Initial RMSE: {summary['metrics']['initial_rmse']:.3e}",
@@ -214,7 +267,7 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
         f"Endpoint error fit: {summary['tip_trajectory']['fitted_endpoint_error']:.3e}",
         f"Iterations: {summary['history']['iterations']}",
         f"Selection: {summary['metrics']['selection']}",
-    ]
+    ])
     y = rect_text[1] + 78
     for line in text_lines:
         draw.text((rect_text[0] + 18, y), line, fill=TEXT if y < rect_text[1] + 170 else MUTED, font=FONT_SMALL)
