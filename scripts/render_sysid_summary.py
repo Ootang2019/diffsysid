@@ -67,7 +67,7 @@ def build_summary(data: dict, result_path: Path) -> dict:
     fit_param = data["fit_param"]
     initial = data["initial_guess"]
     final = data["final_fit"]
-    best = data["best_seen"]
+    best = data.get("best_seen", final)
     gt = data["ground_truth"]
     history = data["history"]
     target = np.asarray(data["target_trajectory"], dtype=float)
@@ -110,7 +110,7 @@ def build_summary(data: dict, result_path: Path) -> dict:
             "loss_improvement_ratio": None if initial_loss == 0.0 else (initial_loss - final_loss) / initial_loss,
             "rmse_improvement_ratio": None if initial_rmse == 0.0 else (initial_rmse - final_rmse) / initial_rmse,
             "final_grad": float(final["grad"]),
-            "selection": final["selection"],
+            "selection": final.get("selection", "best_env"),
         },
         "tip_trajectory": {
             "target_final": target[-1].tolist(),
@@ -123,8 +123,8 @@ def build_summary(data: dict, result_path: Path) -> dict:
             "iterations": len(history),
             "first": None if not history else history[0],
             "last": None if not history else history[-1],
-            "min_loss_iteration": None if not history else int(np.argmin([x["loss"] for x in history])),
-            "min_rmse_iteration": None if not history else int(np.argmin([x["rmse"] for x in history])),
+            "min_loss_iteration": None if not history else int(np.argmin([x.get("loss", x.get("best_loss")) for x in history])),
+            "min_rmse_iteration": None if not history else int(np.argmin([x.get("rmse", x.get("best_rmse")) for x in history])),
         },
     }
     return summary
@@ -160,8 +160,8 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
 
     if hist:
         iters = np.arange(len(hist), dtype=float)
-        losses = np.array([h["loss"] for h in hist], dtype=float)
-        rmses = np.array([h["rmse"] for h in hist], dtype=float)
+        losses = np.array([h.get("loss", h.get("best_loss")) for h in hist], dtype=float)
+        rmses = np.array([h.get("rmse", h.get("best_rmse")) for h in hist], dtype=float)
         loss_bounds = (0.0, max(1.0, float(iters[-1])), min(float(losses.min()), float(rmses.min())), max(float(losses.max()), float(rmses.max())))
         plot_loss = draw_axes(draw, rect_loss, "iteration", "metric value")
         draw_polyline(draw, iters, losses, loss_bounds, plot_loss, COLORS["Loss"])
@@ -169,7 +169,7 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
         draw.text((plot_loss[0] + 10, plot_loss[1] + 10), "Loss", fill=COLORS["Loss"], font=FONT_SMALL)
         draw.text((plot_loss[0] + 70, plot_loss[1] + 10), "RMSE", fill=COLORS["RMSE"], font=FONT_SMALL)
 
-        param_hist = np.array([h["param_value"] for h in hist], dtype=float)
+        param_hist = np.array([h.get("param_value", h.get("best_param_value")) for h in hist], dtype=float)
         param_vals = [
             float(summary["parameter_values"]["ground_truth"]),
             float(summary["parameter_values"]["initial"]),
