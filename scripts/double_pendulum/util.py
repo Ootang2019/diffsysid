@@ -10,6 +10,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 URDF_PATH = REPO_ROOT / "data" / "urdf" / "double_pendulum.urdf"
 TIP_BODY_INDEX = 1
 TIP_LOCAL = wp.vec3(0.0, 0.0, -1.0)
+PARAM_SPECS = {
+    "init_angle_1": ("joint_q", 0),
+    "init_angle_2": ("joint_q", 1),
+    "init_angvel_1": ("joint_qd", 0),
+    "init_angvel_2": ("joint_qd", 1),
+    "joint1_armature": ("joint_armature", 0),
+    "joint1_stiffness": ("joint_target_ke", 0),
+    "joint1_damping": ("joint_target_kd", 0),
+    "joint2_armature": ("joint_armature", 1),
+    "joint2_stiffness": ("joint_target_ke", 1),
+    "joint2_damping": ("joint_target_kd", 1),
+}
+DYNAMIC_PARAM_NAMES = {
+    "joint1_armature",
+    "joint1_stiffness",
+    "joint1_damping",
+    "joint2_armature",
+    "joint2_stiffness",
+    "joint2_damping",
+}
+NONNEGATIVE_PARAM_NAMES = set(DYNAMIC_PARAM_NAMES)
 
 
 @wp.kernel
@@ -37,12 +58,24 @@ def save_tip(body_q: wp.array(dtype=wp.transform), body_index: int, local_tip: w
         out[step, 2] = p[2]
 
 
+def apply_model_parameters(model: newton.Model, params: dict[str, float]) -> None:
+    for name, value in params.items():
+        arr_name, index = PARAM_SPECS[name]
+        wp.launch(set_array_value, dim=1, inputs=[getattr(model, arr_name), index, float(value)])
+
+
 def make_model(
     *,
     init_angle_1: float = 0.2,
     init_angle_2: float = 0.1,
     init_angvel_1: float = 0.0,
     init_angvel_2: float = 0.0,
+    joint1_armature: float = 0.0,
+    joint1_stiffness: float = 0.0,
+    joint1_damping: float = 0.0,
+    joint2_armature: float = 0.0,
+    joint2_stiffness: float = 0.0,
+    joint2_damping: float = 0.0,
     requires_grad: bool = False,
 ):
     builder = newton.ModelBuilder()
@@ -54,10 +87,21 @@ def make_model(
         ignore_inertial_definitions=False,
     )
     model = builder.finalize(requires_grad=requires_grad)
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 0, float(init_angle_1)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 1, float(init_angle_2)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 0, float(init_angvel_1)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 1, float(init_angvel_2)])
+    apply_model_parameters(
+        model,
+        {
+            "init_angle_1": init_angle_1,
+            "init_angle_2": init_angle_2,
+            "init_angvel_1": init_angvel_1,
+            "init_angvel_2": init_angvel_2,
+            "joint1_armature": joint1_armature,
+            "joint1_stiffness": joint1_stiffness,
+            "joint1_damping": joint1_damping,
+            "joint2_armature": joint2_armature,
+            "joint2_stiffness": joint2_stiffness,
+            "joint2_damping": joint2_damping,
+        },
+    )
     return model
 
 

@@ -10,6 +10,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 URDF_PATH = REPO_ROOT / "data" / "urdf" / "pendulum.urdf"
 TIP_BODY_INDEX = 0
 TIP_LOCAL = wp.vec3(0.0, 0.0, -1.0)
+PARAM_SPECS = {
+    "init_angle": ("joint_q", 0),
+    "init_angvel": ("joint_qd", 0),
+    "hinge_armature": ("joint_armature", 0),
+    "hinge_stiffness": ("joint_target_ke", 0),
+    "hinge_damping": ("joint_target_kd", 0),
+}
+DYNAMIC_PARAM_NAMES = {"hinge_armature", "hinge_stiffness", "hinge_damping"}
+NONNEGATIVE_PARAM_NAMES = set(DYNAMIC_PARAM_NAMES)
 
 
 @wp.kernel
@@ -37,7 +46,21 @@ def save_tip(body_q: wp.array(dtype=wp.transform), body_index: int, local_tip: w
         out[step, 2] = p[2]
 
 
-def make_model(*, init_angle: float = 0.2, init_angvel: float = 0.0, requires_grad: bool = False):
+def apply_model_parameters(model: newton.Model, params: dict[str, float]) -> None:
+    for name, value in params.items():
+        arr_name, index = PARAM_SPECS[name]
+        wp.launch(set_array_value, dim=1, inputs=[getattr(model, arr_name), index, float(value)])
+
+
+def make_model(
+    *,
+    init_angle: float = 0.2,
+    init_angvel: float = 0.0,
+    hinge_armature: float = 0.0,
+    hinge_stiffness: float = 0.0,
+    hinge_damping: float = 0.0,
+    requires_grad: bool = False,
+):
     builder = newton.ModelBuilder()
     builder.add_urdf(
         str(URDF_PATH),
@@ -47,8 +70,16 @@ def make_model(*, init_angle: float = 0.2, init_angvel: float = 0.0, requires_gr
         ignore_inertial_definitions=False,
     )
     model = builder.finalize(requires_grad=requires_grad)
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 0, float(init_angle)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 0, float(init_angvel)])
+    apply_model_parameters(
+        model,
+        {
+            "init_angle": init_angle,
+            "init_angvel": init_angvel,
+            "hinge_armature": hinge_armature,
+            "hinge_stiffness": hinge_stiffness,
+            "hinge_damping": hinge_damping,
+        },
+    )
     return model
 
 

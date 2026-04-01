@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from batch_sysid_common import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
 from newton_cartpole_sysid import (
+    FIT_PARAM_CHOICES,
     evaluate,
     make_model_with_param,
     rollout_joint_state_trajectory,
@@ -46,9 +47,15 @@ def run(args):
 
     fixed = {
         "init_cart_pos": args.init_cart_pos,
-        "init_pole_angle": gt_value_raw if args.fit_param == "init_pole_angle" else init_pole_angle_raw,
+        "init_pole_angle": init_pole_angle_raw,
         "init_cart_vel": args.init_cart_vel,
         "init_pole_angvel": args.init_pole_angvel,
+        "cart_armature": args.cart_armature,
+        "cart_stiffness": args.cart_stiffness,
+        "cart_damping": args.cart_damping,
+        "pole_armature": args.pole_armature,
+        "pole_stiffness": args.pole_stiffness,
+        "pole_damping": args.pole_damping,
     }
 
     gt_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
@@ -211,7 +218,7 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Shared-population batch sysID for the URDF cartpole.")
-    p.add_argument("--fit-param", choices=["init_pole_angle", "init_cart_pos", "init_cart_vel", "init_pole_angvel"], required=True)
+    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES, required=True)
     p.add_argument("--gt-value", type=float, required=True)
     p.add_argument("--init-value", type=float, required=True)
     p.add_argument("--init-span", type=float, default=0.25)
@@ -220,6 +227,12 @@ def parse_args():
     p.add_argument("--angle-mode", choices=["urdf_raw", "top_offset"], default="urdf_raw")
     p.add_argument("--init-cart-vel", type=float, default=0.0)
     p.add_argument("--init-pole-angvel", type=float, default=0.0)
+    p.add_argument("--cart-armature", type=float, default=0.0)
+    p.add_argument("--cart-stiffness", type=float, default=0.0)
+    p.add_argument("--cart-damping", type=float, default=0.0)
+    p.add_argument("--pole-armature", type=float, default=0.0)
+    p.add_argument("--pole-stiffness", type=float, default=0.0)
+    p.add_argument("--pole-damping", type=float, default=0.0)
     p.add_argument("--env-count", type=int, default=8)
     p.add_argument("--steps", type=int, default=120)
     p.add_argument("--dt", type=float, default=1.0 / 240.0)

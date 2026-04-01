@@ -2,218 +2,268 @@
 
 Differentiable system identification with NVIDIA Newton + Warp.
 
-A research benchmark for optimizing physical parameters by backpropagating through Newton simulation trajectories. Covers pendulum dynamics, articulated multi-body systems, elasticity, and cartpole control tasks.
+This repo currently focuses on three URDF-backed systems:
+- cartpole
+- pendulum
+- double pendulum
+
+Each system supports:
+- single-run sysid
+- batch sysid with multi-start restarts
+- summary generation
+- side-by-side `gt | init | fit` Newton renders
 
 ## Project structure
 
-```
+```text
 diffsysid/
-├── diffsysid/               # Core reusable batch utilities
-│   ├── batch.py            # Elite restart, population metrics
-│   ├── basic_pendulum.py    # Articulated pendulum builder
-│   ├── spring.py           # Spring-damper systems
-│   ├── common.py           # Softplus, loss kernels
-│   ├── io.py               # JSON result handling
-│   └── __init__.py
-├── scripts/
-│   ├── batch_sysid_common.py    # Shared batch experiment code
-│   ├── pendulum/                # Single & double pendulum experiments
-│   ├── basic_pendulum/          # Articulated 2-DOF pendulum
-│   ├── spring/                  # Spring-damper parameter ID
-│   └── cartpole/                # URDF cartpole from external assets
-├── outputs/                     # Results (JSON, PNG, GIF, MP4)
+├── diffsysid/                         # Shared optimization and batch utilities
 ├── data/
-│   ├── raw/                     # Raw test data
-│   ├── processed/               # Processed datasets
-│   ├── urdf/                    # URDF model definitions
-│   └── sysid_batch/             # Batch config snapshots
-├── .venv/                       # Python 3.12 virtual environment (local)
+│   └── urdf/
+│       ├── cartpole.urdf
+│       ├── pendulum.urdf
+│       └── double_pendulum.urdf
+├── scripts/
+│   ├── batch_sysid_common.py         # Shared Newton sysid helpers
+│   ├── render_sysid_summary.py       # Shared summary JSON/PNG generator
+│   ├── stitch_triptych_frames.py     # Shared frame stitching helper
+│   ├── cartpole/
+│   ├── pendulum/
+│   └── double_pendulum/
+├── outputs/                           # Result JSON, summary PNG, GIF, MP4
+├── .venv/                             # Repo-local Python environment
 ├── requirements.txt
 └── README.md
 ```
 
 ## Setup
 
-### 1. Clone and set up environment
+Run everything from the repo root.
 
 ```bash
 git clone git@github.com:ootang2019/diffsysid.git
 cd diffsysid
-source ./.venv/bin/activate  # local venv already included
-python -c "import warp as wp; print('warp', wp.__version__)"
+source ./.venv/bin/activate
+PYTHONPATH=. python -c "import warp as wp, newton; print('Warp:', wp.__version__)"
 ```
 
-If you clone fresh (without `.venv/`):
+If you need to create the environment:
 
 ```bash
 python3 -m venv .venv
 source ./.venv/bin/activate
-pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-### 2. Verify Warp + Newton
-
-```bash
-python -c "import warp as wp, newton; print('Warp:', wp.__version__)"
-```
+Conventions used throughout this repo:
+- run commands from the repo root
+- set `PYTHONPATH=.`
+- prefer `python -m pip` over `pip`
 
 ## Quick start
 
-All commands run from repo root with `PYTHONPATH=.` and venv active.
+### 1. Single-run sysid
 
-### Pendulum sysID (single bob, identify spring length)
-
-```bash
-source ./.venv/bin/activate
-cd ~/workspace/diffsysid
-
-PYTHONPATH=. python scripts/pendulum/newton_pendulum_sysid.py \
-  --system single \
-  --gt-length 1.0 \
-  --init-length 0.8 \
-  --iters 100 \
-  --output-json outputs/newton_pendulum_sysid/example.json
-
-# Render the result
-PYTHONPATH=. python scripts/pendulum/render_newton_pendulum_sysid.py \
-  outputs/newton_pendulum_sysid/example.json
-```
-
-### Batch sysID (multi-replica pendulum)
-
-```bash
-PYTHONPATH=. python scripts/pendulum/newton_pendulum_batch_sysid.py \
-  --system single \
-  --fit-param length \
-  --env-count 8 \
-  --iters 50 \
-  --output-json outputs/newton_pendulum_sysid/batch_example.json
-```
-
-### Spring damper system
-
-```bash
-PYTHONPATH=. python scripts/spring/newton_spring_sysid.py \
-  --gt-stiffness 80.0 \
-  --gt-damping 6.0 \
-  --init-stiffness 100.0 \
-  --init-damping 4.0 \
-  --iters 80 \
-  --output-json outputs/newton_spring_sysid/example.json
-
-# Render
-PYTHONPATH=. python scripts/spring/render_newton_spring_sysid.py \
-  outputs/newton_spring_sysid/example.json
-```
-
-### Articulated pendulum (2-body chain)
-
-```bash
-PYTHONPATH=. python scripts/basic_pendulum/newton_basic_pendulum_sysid.py \
-  --system double \
-  --gt-length1 1.0 --gt-length2 1.0 \
-  --init-length1 0.9 --init-length2 0.9 \
-  --iters 100 \
-  --output-json outputs/newton_basic_pendulum_sysid/example.json
-
-# Batch version
-PYTHONPATH=. python scripts/basic_pendulum/newton_basic_pendulum_batch_sysid.py \
-  --env-count 8 --iters 50 \
-  --output-json outputs/newton_basic_pendulum_sysid/batch_example.json
-```
-
-### Cartpole (URDF-based)
+Cartpole:
 
 ```bash
 PYTHONPATH=. python scripts/cartpole/newton_cartpole_sysid.py \
   --fit-param init_pole_angle \
   --gt-value 0.10 \
-  --init-value 1.00 \
+  --init-value 0.80 \
   --iters 80 \
-  --output-json outputs/newton_cartpole_sysid/example.json
-
-# Render summary and animation
-PYTHONPATH=. python scripts/cartpole/render_newton_cartpole_sysid.py \
-  outputs/newton_cartpole_sysid/example.json \
-  --summary-png outputs/newton_cartpole_sysid/summary.png \
-  --gif outputs/newton_cartpole_sysid/animation.gif \
-  --mp4 outputs/newton_cartpole_sysid/animation.mp4
-
-# ViewerGL replay
-PYTHONPATH=. python scripts/cartpole/render_newton_cartpole.py \
-  --result-json outputs/newton_cartpole_sysid/example.json \
-  --variant fit --label cartpole_fit \
-  --output-dir outputs/newton_cartpole_sysid/viewer
+  --output-json outputs/newton_cartpole_sysid/result.json
 ```
 
-## Key features
+Pendulum:
 
-### Batch system ID
-- Multi-start optimization with `env_count` parallel replicas
-- Elite restart strategy: weak replicas cloned from best + noise
-- Per-environment loss tracking and population statistics
-- Shared ground-truth parameters across all environments
+```bash
+PYTHONPATH=. python scripts/pendulum/newton_pendulum_sysid.py \
+  --fit-param init_angle \
+  --gt-value 0.20 \
+  --init-value 0.60 \
+  --iters 80 \
+  --output-json outputs/newton_pendulum_sysid/result.json
+```
 
-### Rendering pipeline
-- Static PNG summaries with geometry overlays and convergence plots
-- Animated GIFs and MP4s for trajectory comparison
-- JSON metadata preserving angle conventions and fit selection logic
+Double pendulum:
 
-### Supported systems
-| System | File | Fit params | Notes |
-|--------|------|-----------|-------|
-| Pendulum (single) | `pendulum/newton_pendulum_sysid.py` | `length`, `init_angle` | Spring-tethered bob |
-| Pendulum (batch) | `pendulum/newton_pendulum_batch_sysid.py` | `length`, `init_angle` | Multi-replica with elite restart |
-| Basic pendulum | `basic_pendulum/newton_basic_pendulum_sysid.py` | `length1`, `length2`, `init_angle` | Two-body articulated chain |
-| Basic pendulum (batch) | `basic_pendulum/newton_basic_pendulum_batch_sysid.py` | `length1`, `length2` | Batched multi-start |
-| Spring | `spring/newton_spring_sysid.py` | `stiffness`, `damping` | Single particle on spring |
-| Spring (batch) | `spring/newton_spring_batch_sysid.py` | `stiffness`, `damping` | Multi-replica spring fitting |
-| Cartpole | `cartpole/newton_cartpole_sysid.py` | `init_pole_angle`, etc. | URDF-imported dynamics |
+```bash
+PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_sysid.py \
+  --fit-param init_angle_2 \
+  --gt-value 0.10 \
+  --init-value -0.40 \
+  --iters 80 \
+  --output-json outputs/newton_double_pendulum_sysid/result.json
+```
 
-## Batch result interpretation
+### 2. Single-run summary and compare render
 
-JSON output includes:
+Each per-robot `render_sysid_summary.py` wrapper does both:
+- generates `summary.json`
+- generates `summary.png`
+- renders `gt`, `init`, and `fit`
+- stitches them into a compare GIF and MP4 under `compare/`
 
-- `config`: all run hyperparameters
-- `ground_truth`: hidden parameters used to generate target trajectory
-- `initial_guess`: per-environment starting parameters
-- `final_fit`: solved parameters + loss + metrics
-  - `best_params`: winning replica parameters
-  - `traj_rmse`: final trajectory RMSE
-  - `stiffness_param_rmse` / `distance_to_gt_*`: parameter error vs ground truth
-  - `population_std`: population spread at convergence
-- `history`: per-iteration convergence log
-- `restart_events`: elite clone and random restart events
+Cartpole:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/render_sysid_summary.py \
+  outputs/newton_cartpole_sysid/result.json
+```
+
+Pendulum:
+
+```bash
+PYTHONPATH=. python scripts/pendulum/render_sysid_summary.py \
+  outputs/newton_pendulum_sysid/result.json
+```
+
+Double pendulum:
+
+```bash
+PYTHONPATH=. python scripts/double_pendulum/render_sysid_summary.py \
+  outputs/newton_double_pendulum_sysid/result.json
+```
+
+### 3. Batch sysid
+
+Cartpole:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/newton_cartpole_batch_sysid.py \
+  --fit-param init_pole_angle \
+  --gt-value 0.20 \
+  --init-value 0.65 \
+  --env-count 8 \
+  --iters 40 \
+  --output-json outputs/newton_cartpole_batch_sysid/result.json
+```
+
+Pendulum:
+
+```bash
+PYTHONPATH=. python scripts/pendulum/newton_pendulum_batch_sysid.py \
+  --fit-param init_angle \
+  --gt-value 0.20 \
+  --init-value 0.65 \
+  --env-count 8 \
+  --iters 40 \
+  --output-json outputs/newton_pendulum_batch_sysid/result.json
+```
+
+Double pendulum:
+
+```bash
+PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_batch_sysid.py \
+  --fit-param init_angle_2 \
+  --gt-value 0.10 \
+  --init-value -0.40 \
+  --env-count 8 \
+  --iters 40 \
+  --output-json outputs/newton_double_pendulum_batch_sysid/result.json
+```
+
+### 4. Batch summary and compare render
+
+Each per-robot `render_batch_sysid_summary.py` wrapper generates the batch summary JSON/PNG and the stitched `gt | init | fit` compare render beside the selected batch `result.json`.
+
+Cartpole:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/render_batch_sysid_summary.py \
+  outputs/newton_cartpole_batch_sysid/result.json
+```
+
+Pendulum:
+
+```bash
+PYTHONPATH=. python scripts/pendulum/render_batch_sysid_summary.py \
+  outputs/newton_pendulum_batch_sysid/result.json
+```
+
+Double pendulum:
+
+```bash
+PYTHONPATH=. python scripts/double_pendulum/render_batch_sysid_summary.py \
+  outputs/newton_double_pendulum_batch_sysid/result.json
+```
+
+## Supported systems
+
+| System | Single-run sysid | Batch sysid | Summary wrapper | Batch summary wrapper |
+| --- | --- | --- | --- | --- |
+| Cartpole | `scripts/cartpole/newton_cartpole_sysid.py` | `scripts/cartpole/newton_cartpole_batch_sysid.py` | `scripts/cartpole/render_sysid_summary.py` | `scripts/cartpole/render_batch_sysid_summary.py` |
+| Pendulum | `scripts/pendulum/newton_pendulum_sysid.py` | `scripts/pendulum/newton_pendulum_batch_sysid.py` | `scripts/pendulum/render_sysid_summary.py` | `scripts/pendulum/render_batch_sysid_summary.py` |
+| Double pendulum | `scripts/double_pendulum/newton_double_pendulum_sysid.py` | `scripts/double_pendulum/newton_double_pendulum_batch_sysid.py` | `scripts/double_pendulum/render_sysid_summary.py` | `scripts/double_pendulum/render_batch_sysid_summary.py` |
+
+Current fit parameters:
+- cartpole: `init_pole_angle`, `init_cart_pos`, `init_cart_vel`, `init_pole_angvel`, `cart_armature`, `cart_stiffness`, `cart_damping`, `pole_armature`, `pole_stiffness`, `pole_damping`
+- pendulum: `init_angle`, `init_angvel`, `hinge_armature`, `hinge_stiffness`, `hinge_damping`
+- double pendulum: `init_angle_1`, `init_angle_2`, `init_angvel_1`, `init_angvel_2`, `joint1_armature`, `joint1_stiffness`, `joint1_damping`, `joint2_armature`, `joint2_stiffness`, `joint2_damping`
+
+## Outputs
+
+Single-run and batch workflows both write artifacts next to the selected `result.json`.
+
+Expected artifacts:
+- `result.json`
+- `summary.json`
+- `summary.png`
+- `compare/...gif`
+- `compare/...mp4`
+
+Typical layout:
+
+```text
+outputs/newton_cartpole_sysid/
+├── result.json
+├── summary.json
+├── summary.png
+└── compare/
+    ├── gt/
+    ├── init/
+    ├── fit/
+    └── compare/
+        ├── cartpole_compare.gif
+        └── cartpole_compare.mp4
+```
+
+Batch runs use the same layout pattern under:
+- `outputs/newton_cartpole_batch_sysid/`
+- `outputs/newton_pendulum_batch_sysid/`
+- `outputs/newton_double_pendulum_batch_sysid/`
+
+## Lower-level render helpers
+
+The preferred entrypoints are the per-robot summary wrappers above.
+
+Lower-level helpers still exist when you want finer control:
+- `scripts/cartpole/render_newton_cartpole.py`
+- `scripts/pendulum/render_newton_pendulum.py`
+- `scripts/double_pendulum/render_newton_double_pendulum.py`
+- `scripts/cartpole/render_compare_cartpole.py`
+- `scripts/pendulum/render_compare_pendulum.py`
+- `scripts/double_pendulum/render_compare_double_pendulum.py`
 
 ## Troubleshooting
 
-**CUDA/Warp initialization fails:**
-```bash
-python -c "import warp as wp; wp.init()"
-```
-Ensure NVIDIA drivers are installed and CUDA 12+ is available.
+If `warp` or `newton` cannot be imported:
 
-**Import errors for `diffsysid` or `batch_sysid_common`:**
-- Always use `PYTHONPATH=. python ...` when running scripts
-- All scripts must be run from repo root
-
-**Visualization missing fonts:**
-Your system must have DejaVuSans or Arial fonts installed. On Linux:
 ```bash
-sudo apt install fonts-dejavu fonts-liberation
+PYTHONPATH=. python -c "import warp as wp, newton; print('Warp:', wp.__version__)"
 ```
 
-## References
+If local imports fail:
+- run from the repo root
+- keep `PYTHONPATH=.`
+- use the repo-local `.venv`
 
-- NVIDIA Newton docs: https://docs.nvidia.com/nsight-systems/profiling-nvidia-newton/
-- Warp: https://github.com/NVIDIA/warp
-- Differentiable physics: Ajay et al. (2016), Liang et al. (2019)
+If rendering works but GIF/MP4 generation fails, verify `ffmpeg` is installed and available on `PATH`.
 
-## License
+## Notes
 
-See LICENSE file.
-
-## Contact
-
-Lab experiment repository for research. Tune hyperparameters (`--iters`, `--lr`, `--env-count`) for your scenario. Always inspect JSON `final_fit` before relying on rendered outputs.
+- Angle handling may depend on the script's `--angle-mode` option when applicable.
+- The current workflows fit one parameter at a time against trajectory loss, including both initial-state and selected joint dynamics parameters.
+- Summary wrappers are the main user-facing interface for generating plots and comparison renders from a finished result.

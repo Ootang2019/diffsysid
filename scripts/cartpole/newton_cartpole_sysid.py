@@ -10,7 +10,15 @@ import numpy as np
 import warp as wp
 import newton
 
-from util import POLE_BODY_INDEX, POLE_TIP_LOCAL, URDF_PATH, make_model, rollout_tip_trajectory, save_pole_tip, set_array_value
+from util import (
+    PARAM_SPECS,
+    POLE_BODY_INDEX,
+    POLE_TIP_LOCAL,
+    URDF_PATH,
+    make_model,
+    rollout_tip_trajectory,
+    save_pole_tip,
+)
 
 
 UPRIGHT_RAW_ANGLE = float(np.pi)
@@ -64,28 +72,14 @@ class IterationLog:
     grad: float
 
 
+FIT_PARAM_CHOICES = tuple(PARAM_SPECS.keys())
+
+
 def make_model_with_param(param_name: str, param_value: float, fixed: dict[str, float], requires_grad: bool):
-    model = make_model(
-        init_cart_pos=fixed["init_cart_pos"],
-        init_pole_angle=fixed["init_pole_angle"],
-        init_cart_vel=fixed["init_cart_vel"],
-        init_pole_angvel=fixed["init_pole_angvel"],
-        requires_grad=requires_grad,
-    )
-    if param_name == "init_pole_angle":
-        wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 1, float(param_value)])
-        grad_attr, grad_index = "joint_q", 1
-    elif param_name == "init_cart_pos":
-        wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 0, float(param_value)])
-        grad_attr, grad_index = "joint_q", 0
-    elif param_name == "init_cart_vel":
-        wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 0, float(param_value)])
-        grad_attr, grad_index = "joint_qd", 0
-    elif param_name == "init_pole_angvel":
-        wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 1, float(param_value)])
-        grad_attr, grad_index = "joint_qd", 1
-    else:
-        raise ValueError(param_name)
+    params = dict(fixed)
+    params[param_name] = float(param_value)
+    model = make_model(requires_grad=requires_grad, **params)
+    grad_attr, grad_index = PARAM_SPECS[param_name]
     return model, grad_attr, grad_index
 
 
@@ -131,9 +125,15 @@ def run(args):
 
     fixed = {
         "init_cart_pos": args.init_cart_pos,
-        "init_pole_angle": gt_value_raw if args.fit_param == "init_pole_angle" else init_pole_angle_raw,
+        "init_pole_angle": init_pole_angle_raw,
         "init_cart_vel": args.init_cart_vel,
         "init_pole_angvel": args.init_pole_angvel,
+        "cart_armature": args.cart_armature,
+        "cart_stiffness": args.cart_stiffness,
+        "cart_damping": args.cart_damping,
+        "pole_armature": args.pole_armature,
+        "pole_stiffness": args.pole_stiffness,
+        "pole_damping": args.pole_damping,
     }
     gt_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
     gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
@@ -182,9 +182,12 @@ def run(args):
     init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, args.steps, args.dt)
     fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, args.steps, args.dt)
 
-    fixed_display = dict(fixed)
-    fixed_display["init_pole_angle_raw"] = fixed["init_pole_angle"]
-    fixed_display["init_pole_angle"] = display_angle(fixed["init_pole_angle"])
+    fixed_display = {}
+    for name, value in fixed.items():
+        if name == args.fit_param:
+            continue
+        fixed_display[f"{name}_raw"] = value
+        fixed_display[name] = display_angle(value) if name == "init_pole_angle" else value
 
     result = {
         "asset": str(URDF_PATH),
@@ -225,7 +228,7 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="URDF-imported cartpole sysID on one simple state parameter.")
-    p.add_argument("--fit-param", choices=["init_pole_angle", "init_cart_pos", "init_cart_vel", "init_pole_angvel"], required=True)
+    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES, required=True)
     p.add_argument("--gt-value", type=float, required=True)
     p.add_argument("--init-value", type=float, required=True)
     p.add_argument("--init-cart-pos", type=float, default=0.0)
@@ -233,6 +236,12 @@ def parse_args():
     p.add_argument("--angle-mode", choices=["urdf_raw", "top_offset"], default="urdf_raw")
     p.add_argument("--init-cart-vel", type=float, default=0.0)
     p.add_argument("--init-pole-angvel", type=float, default=0.0)
+    p.add_argument("--cart-armature", type=float, default=0.0)
+    p.add_argument("--cart-stiffness", type=float, default=0.0)
+    p.add_argument("--cart-damping", type=float, default=0.0)
+    p.add_argument("--pole-armature", type=float, default=0.0)
+    p.add_argument("--pole-stiffness", type=float, default=0.0)
+    p.add_argument("--pole-damping", type=float, default=0.0)
     p.add_argument("--steps", type=int, default=120)
     p.add_argument("--dt", type=float, default=1.0 / 240.0)
     p.add_argument("--iters", type=int, default=80)

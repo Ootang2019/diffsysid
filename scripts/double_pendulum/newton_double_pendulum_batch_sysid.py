@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from batch_sysid_common import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
 from newton_double_pendulum_sysid import (
+    FIT_PARAM_CHOICES,
     evaluate,
     make_model_with_param,
     rollout_joint_state_trajectory,
@@ -50,9 +51,13 @@ def run(args):
         "init_angle_2": top_offset_to_raw_angle(args.init_angle_2) if args.angle_mode == "top_offset" else args.init_angle_2,
         "init_angvel_1": args.init_angvel_1,
         "init_angvel_2": args.init_angvel_2,
+        "joint1_armature": args.joint1_armature,
+        "joint1_stiffness": args.joint1_stiffness,
+        "joint1_damping": args.joint1_damping,
+        "joint2_armature": args.joint2_armature,
+        "joint2_stiffness": args.joint2_stiffness,
+        "joint2_damping": args.joint2_damping,
     }
-    if args.fit_param in ANGLE_PARAMS:
-        fixed[args.fit_param] = gt_value_raw
 
     gt_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
     gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
@@ -164,7 +169,7 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Shared-population batch sysID for the URDF double pendulum.")
-    p.add_argument("--fit-param", choices=["init_angle_1", "init_angle_2", "init_angvel_1", "init_angvel_2"], required=True)
+    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES, required=True)
     p.add_argument("--gt-value", type=float, required=True)
     p.add_argument("--init-value", type=float, required=True)
     p.add_argument("--init-span", type=float, default=0.25)
@@ -173,6 +178,12 @@ def parse_args():
     p.add_argument("--angle-mode", choices=["urdf_raw", "top_offset"], default="urdf_raw")
     p.add_argument("--init-angvel-1", dest="init_angvel_1", type=float, default=0.0)
     p.add_argument("--init-angvel-2", dest="init_angvel_2", type=float, default=0.0)
+    p.add_argument("--joint1-armature", type=float, default=0.0)
+    p.add_argument("--joint1-stiffness", type=float, default=0.0)
+    p.add_argument("--joint1-damping", type=float, default=0.0)
+    p.add_argument("--joint2-armature", type=float, default=0.0)
+    p.add_argument("--joint2-stiffness", type=float, default=0.0)
+    p.add_argument("--joint2-damping", type=float, default=0.0)
     p.add_argument("--env-count", type=int, default=8)
     p.add_argument("--steps", type=int, default=120)
     p.add_argument("--dt", type=float, default=1.0 / 240.0)

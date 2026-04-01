@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from batch_sysid_common import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
 from newton_pendulum_sysid import (
+    FIT_PARAM_CHOICES,
     evaluate,
     make_model_with_param,
     rollout_joint_state_trajectory,
@@ -44,7 +45,13 @@ def run(args):
     init_value_raw = top_offset_to_raw_angle(args.init_value) if args.angle_mode == "top_offset" and args.fit_param == "init_angle" else args.init_value
     init_angle_raw = top_offset_to_raw_angle(args.init_angle) if args.angle_mode == "top_offset" else args.init_angle
 
-    fixed = {"init_angle": gt_value_raw if args.fit_param == "init_angle" else init_angle_raw, "init_angvel": args.init_angvel}
+    fixed = {
+        "init_angle": init_angle_raw,
+        "init_angvel": args.init_angvel,
+        "hinge_armature": args.hinge_armature,
+        "hinge_stiffness": args.hinge_stiffness,
+        "hinge_damping": args.hinge_damping,
+    }
     gt_model, _, _ = make_model_with_param(args.fit_param, gt_value_raw, fixed, requires_grad=False)
     gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
     gt_traj = wp.array(gt_traj_np, dtype=float)
@@ -155,13 +162,16 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Shared-population batch sysID for the URDF pendulum.")
-    p.add_argument("--fit-param", choices=["init_angle", "init_angvel"], required=True)
+    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES, required=True)
     p.add_argument("--gt-value", type=float, required=True)
     p.add_argument("--init-value", type=float, required=True)
     p.add_argument("--init-span", type=float, default=0.25)
     p.add_argument("--init-angle", type=float, default=0.2)
     p.add_argument("--angle-mode", choices=["urdf_raw", "top_offset"], default="urdf_raw")
     p.add_argument("--init-angvel", type=float, default=0.0)
+    p.add_argument("--hinge-armature", type=float, default=0.0)
+    p.add_argument("--hinge-stiffness", type=float, default=0.0)
+    p.add_argument("--hinge-damping", type=float, default=0.0)
     p.add_argument("--env-count", type=int, default=8)
     p.add_argument("--steps", type=int, default=120)
     p.add_argument("--dt", type=float, default=1.0 / 240.0)

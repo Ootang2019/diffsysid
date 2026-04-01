@@ -11,6 +11,27 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 URDF_PATH = REPO_ROOT / "data" / "urdf" / "cartpole.urdf"
 POLE_BODY_INDEX = 1
 POLE_TIP_LOCAL = wp.vec3(0.0, 0.0, -1.0)
+PARAM_SPECS = {
+    "init_cart_pos": ("joint_q", 0),
+    "init_pole_angle": ("joint_q", 1),
+    "init_cart_vel": ("joint_qd", 0),
+    "init_pole_angvel": ("joint_qd", 1),
+    "cart_armature": ("joint_armature", 0),
+    "cart_stiffness": ("joint_target_ke", 0),
+    "cart_damping": ("joint_target_kd", 0),
+    "pole_armature": ("joint_armature", 1),
+    "pole_stiffness": ("joint_target_ke", 1),
+    "pole_damping": ("joint_target_kd", 1),
+}
+DYNAMIC_PARAM_NAMES = {
+    "cart_armature",
+    "cart_stiffness",
+    "cart_damping",
+    "pole_armature",
+    "pole_stiffness",
+    "pole_damping",
+}
+NONNEGATIVE_PARAM_NAMES = set(DYNAMIC_PARAM_NAMES)
 
 
 @wp.kernel
@@ -38,7 +59,26 @@ def save_pole_tip(body_q: wp.array(dtype=wp.transform), body_index: int, local_t
         out[step, 2] = p[2]
 
 
-def make_model(*, init_cart_pos: float = 0.0, init_pole_angle: float = 0.2, init_cart_vel: float = 0.0, init_pole_angvel: float = 0.0, requires_grad: bool = False):
+def apply_model_parameters(model: newton.Model, params: dict[str, float]) -> None:
+    for name, value in params.items():
+        arr_name, index = PARAM_SPECS[name]
+        wp.launch(set_array_value, dim=1, inputs=[getattr(model, arr_name), index, float(value)])
+
+
+def make_model(
+    *,
+    init_cart_pos: float = 0.0,
+    init_pole_angle: float = 0.2,
+    init_cart_vel: float = 0.0,
+    init_pole_angvel: float = 0.0,
+    cart_armature: float = 0.0,
+    cart_stiffness: float = 0.0,
+    cart_damping: float = 0.0,
+    pole_armature: float = 0.0,
+    pole_stiffness: float = 0.0,
+    pole_damping: float = 0.0,
+    requires_grad: bool = False,
+):
     builder = newton.ModelBuilder()
     builder.add_urdf(
         str(URDF_PATH),
@@ -48,10 +88,21 @@ def make_model(*, init_cart_pos: float = 0.0, init_pole_angle: float = 0.2, init
         ignore_inertial_definitions=False,
     )
     model = builder.finalize(requires_grad=requires_grad)
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 0, float(init_cart_pos)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_q, 1, float(init_pole_angle)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 0, float(init_cart_vel)])
-    wp.launch(set_array_value, dim=1, inputs=[model.joint_qd, 1, float(init_pole_angvel)])
+    apply_model_parameters(
+        model,
+        {
+            "init_cart_pos": init_cart_pos,
+            "init_pole_angle": init_pole_angle,
+            "init_cart_vel": init_cart_vel,
+            "init_pole_angvel": init_pole_angvel,
+            "cart_armature": cart_armature,
+            "cart_stiffness": cart_stiffness,
+            "cart_damping": cart_damping,
+            "pole_armature": pole_armature,
+            "pole_stiffness": pole_stiffness,
+            "pole_damping": pole_damping,
+        },
+    )
     return model
 
 
