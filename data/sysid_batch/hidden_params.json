@@ -1,0 +1,10 @@
+{
+  "mu": 0.63,
+  "solref_timeconst": 0.018,
+  "solref_dampratio": 2.2,
+  "solimp_d0": 0.935,
+  "solimp_dwidth": 0.979,
+  "solimp_width": 0.0025,
+  "solimp_midpoint": 0.018,
+  "solimp_power": 2.8
+}
