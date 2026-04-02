@@ -13,7 +13,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1]
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-from batch_sysid_common import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
+from diffsysid.population_restarts import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
 from newton_cartpole_sysid import (
     FIT_PARAM_SELECTION_CHOICES,
     load_or_generate_ground_truth,

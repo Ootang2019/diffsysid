@@ -21,7 +21,7 @@ Each system supports:
 
 ```text
 diffsysid/
-├── diffsysid/                         # Shared optimization and batch utilities
+├── diffsysid/                         # Shared optimization and population-restart utilities
 ├── data/
 │   ├── urdf/
 │   │   ├── cartpole.urdf
@@ -29,7 +29,6 @@ diffsysid/
 │   │   └── double_pendulum.urdf
 │   └── gt_datasets/                  # Saved ground-truth rollout JSON files
 ├── scripts/
-│   ├── batch_sysid_common.py         # Shared Newton sysid helpers
 │   ├── gt_trajectory_common.py       # Shared saved-ground-truth helpers
 │   ├── render_sysid_summary.py       # Shared summary JSON/PNG generator
 │   ├── stitch_triptych_frames.py     # Shared frame stitching helper

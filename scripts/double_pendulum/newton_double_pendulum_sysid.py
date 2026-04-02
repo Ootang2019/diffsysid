@@ -29,14 +29,24 @@ from util import (
 
 
 UPRIGHT_RAW_ANGLE = float(np.pi)
+UPRIGHT_RAW_ANGLES = {
+    "init_angle_1": float(np.pi),
+    # Joint 2 is relative to link 1. When the chain is locally aligned upright,
+    # the child link's relative raw angle is 0, not pi.
+    "init_angle_2": 0.0,
+}
 
 
-def top_offset_to_raw_angle(top_offset: float) -> float:
-    return UPRIGHT_RAW_ANGLE - float(top_offset)
+def top_offset_to_raw_angle(name: str, top_offset: float) -> float:
+    if name == "init_angle_2":
+        return -float(top_offset)
+    return UPRIGHT_RAW_ANGLES[name] - float(top_offset)
 
 
-def raw_angle_to_top_offset(raw_angle: float) -> float:
-    return UPRIGHT_RAW_ANGLE - float(raw_angle)
+def raw_angle_to_top_offset(name: str, raw_angle: float) -> float:
+    if name == "init_angle_2":
+        return -float(raw_angle)
+    return UPRIGHT_RAW_ANGLES[name] - float(raw_angle)
 
 
 def rollout_joint_state_trajectory(model: newton.Model, steps: int, dt: float):
@@ -119,13 +129,13 @@ def resolve_fit_request(args, *, default_fit_params: list[str] | None = None, ta
 
 def parameter_to_raw(name: str, value: float, angle_mode: str) -> float:
     if angle_mode == "top_offset" and name in ANGLE_PARAMS:
-        return top_offset_to_raw_angle(value)
+        return top_offset_to_raw_angle(name, value)
     return float(value)
 
 
 def display_value(name: str, raw_value: float, angle_mode: str) -> float:
     if angle_mode == "top_offset" and name in ANGLE_PARAMS:
-        return raw_angle_to_top_offset(raw_value)
+        return raw_angle_to_top_offset(name, raw_value)
     return float(raw_value)
 
 
@@ -158,7 +168,8 @@ def angle_convention_payload(args) -> dict:
         "mode": args.angle_mode,
         "raw_zero_meaning": "link hanging straight down",
         "raw_upright_angle": UPRIGHT_RAW_ANGLE,
-        "top_offset_definition": "when mode=top_offset, reported angle = pi - raw_urdf_angle, so 0 means upright/top",
+        "raw_upright_angles": UPRIGHT_RAW_ANGLES,
+        "top_offset_definition": "when mode=top_offset, init_angle_1 uses pi - raw, while init_angle_2 uses -raw, so 0 means locally aligned upright/top for each link",
     }
 
 
