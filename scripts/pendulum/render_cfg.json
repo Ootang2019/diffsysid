@@ -1,0 +1,14 @@
+{
+  "single": {
+    "result_json": "outputs/newton_pendulum_sysid/result.json",
+    "output_dir": "outputs/newton_pendulum_sysid/compare",
+    "label": "pendulum_compare",
+    "subtitle": "gt vs init vs fit"
+  },
+  "batch": {
+    "result_json": "outputs/newton_pendulum_batch_sysid/result.json",
+    "output_dir": "outputs/newton_pendulum_batch_sysid/compare",
+    "label": "pendulum_batch_compare",
+    "subtitle": "batch gt vs init vs fit"
+  }
+}

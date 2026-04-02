@@ -1,0 +1,10 @@
+{
+  "fit_param": "init_angle",
+  "gt_value": "0.6",
+  "init_angle": 0.6,
+  "angle_mode": "top_offset",
+  "init_angvel": 0.1,
+  "steps": 180,
+  "dt": 0.004166666666666667,
+  "output_json": "data/gt_datasets/pendulum_default_gt.json"
+}

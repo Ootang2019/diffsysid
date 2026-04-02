@@ -1,0 +1,22 @@
+{
+  "single": {
+    "gt_json": "data/gt_datasets/cartpole_default_gt.json",
+    "fit_param": "pole_damping",
+    "init_value": "1.0",
+    "angle_mode": "top_offset",
+    "iters": 40,
+    "lr": 0.01,
+    "output_json": "outputs/newton_cartpole_sysid/result.json"
+  },
+  "batch": {
+    "gt_json": "data/gt_datasets/cartpole_default_gt.json",
+    "fit_param": "pole_damping",
+    "init_value": "1.0",
+    "angle_mode": "top_offset",
+    "env_count": 16,
+    "init_span": 0.2,
+    "iters": 40,
+    "lr": 0.01,
+    "output_json": "outputs/newton_cartpole_batch_sysid/result.json"
+  }
+}

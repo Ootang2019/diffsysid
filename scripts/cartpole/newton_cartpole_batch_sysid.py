@@ -14,6 +14,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from diffsysid.population_restarts import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
+from config_cli import resolve_config_argv
 from newton_cartpole_sysid import (
     FIT_PARAM_SELECTION_CHOICES,
     load_or_generate_ground_truth,
@@ -348,7 +349,8 @@ def run(args):
     print(f"saved results to {out}")
 
 
-def parse_args():
+def parse_args(argv=None):
+    argv = resolve_config_argv(argv, script_file=__file__, default_config_name="sysid_cfg.json", config_section="batch")
     p = argparse.ArgumentParser(description="Shared-population batch sysID for the URDF cartpole.")
     p.add_argument("--fit-param", choices=FIT_PARAM_SELECTION_CHOICES)
     p.add_argument("--init-value", type=str)
@@ -386,7 +388,7 @@ def parse_args():
     p.add_argument("--clip-max", type=float, default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-json", type=str, required=True)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 if __name__ == "__main__":

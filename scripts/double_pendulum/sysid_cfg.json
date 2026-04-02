@@ -1,0 +1,22 @@
+{
+  "single": {
+    "gt_json": "data/gt_datasets/double_pendulum_default_gt.json",
+    "fit_param": "init_angle_2",
+    "init_value": "0.2",
+    "angle_mode": "top_offset",
+    "iters": 60,
+    "lr": 0.0005,
+    "output_json": "outputs/newton_double_pendulum_sysid/result.json"
+  },
+  "batch": {
+    "gt_json": "data/gt_datasets/double_pendulum_default_gt.json",
+    "fit_param": "init_angle_2",
+    "init_value": "0.2",
+    "angle_mode": "top_offset",
+    "env_count": 16,
+    "init_span": 0.2,
+    "iters": 60,
+    "lr": 0.0005,
+    "output_json": "outputs/newton_double_pendulum_batch_sysid/result.json"
+  }
+}

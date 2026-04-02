@@ -7,6 +7,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from config_cli import resolve_config_argv
+
 
 def run(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(cmd, check=True, cwd=cwd, env=env)
@@ -21,10 +27,20 @@ def default_result_json(root: Path) -> Path:
     raise FileNotFoundError(f"No cartpole result json found. Tried: {', '.join(str(p) for p in candidates)}")
 
 
-def main():
+def main(argv=None):
+    argv = resolve_config_argv(
+        argv,
+        script_file=__file__,
+        default_config_name="render_cfg.json",
+        config_section="single",
+        positional_keys=("result_json",),
+    )
     p = argparse.ArgumentParser(description="Generate cartpole summary artifacts and gt/init/fit compare renders beside a sysID result.")
     p.add_argument("result_json", type=Path, nargs="?")
-    args = p.parse_args()
+    p.add_argument("--output-dir", type=Path)
+    p.add_argument("--label", type=str, default="cartpole_compare")
+    p.add_argument("--subtitle", type=str, default="gt vs init vs fit")
+    args = p.parse_args(argv)
 
     root = Path(__file__).resolve().parents[2]
     result_json = args.result_json.resolve() if args.result_json is not None else default_result_json(root)
@@ -40,11 +56,11 @@ def main():
             "--result-json",
             str(result_json),
             "--output-dir",
-            str(result_json.parent / "compare"),
+            str(args.output_dir if args.output_dir is not None else (result_json.parent / "compare")),
             "--label",
-            "cartpole_compare",
+            args.label,
             "--subtitle",
-            "gt vs init vs fit",
+            args.subtitle,
         ],
         cwd=root,
         env=env,

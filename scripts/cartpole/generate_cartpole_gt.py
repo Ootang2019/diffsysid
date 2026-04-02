@@ -13,6 +13,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from gt_trajectory_common import save_ground_truth_json
+from config_cli import resolve_config_argv
 from newton_cartpole_sysid import (
     FIT_PARAM_CHOICES,
     FIT_PARAM_SELECTION_CHOICES,
@@ -29,7 +30,8 @@ from util import DYNAMIC_PARAM_NAMES
 from util import URDF_PATH
 
 
-def parse_args():
+def parse_args(argv=None):
+    argv = resolve_config_argv(argv, script_file=__file__, default_config_name="generate_trajectory_cfg.json")
     p = argparse.ArgumentParser(description="Generate and save a cartpole ground-truth trajectory for later sysID runs.")
     p.add_argument("--fit-param", choices=FIT_PARAM_SELECTION_CHOICES)
     p.add_argument("--gt-value", type=str)
@@ -53,7 +55,7 @@ def parse_args():
     p.add_argument("--random-gt-span", type=float, default=0.25)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-json", type=str, required=True)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 def resolve_generator_request(args):

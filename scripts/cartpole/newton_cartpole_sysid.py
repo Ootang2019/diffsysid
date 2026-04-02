@@ -15,6 +15,7 @@ if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
 from gt_trajectory_common import load_ground_truth_json
+from config_cli import resolve_config_argv
 from util import (
     DYNAMIC_PARAM_NAMES,
     NONNEGATIVE_PARAM_NAMES,
@@ -351,7 +352,8 @@ def run(args):
     return result
 
 
-def parse_args():
+def parse_args(argv=None):
+    argv = resolve_config_argv(argv, script_file=__file__, default_config_name="sysid_cfg.json", config_section="single")
     p = argparse.ArgumentParser(description="URDF-imported cartpole sysID on one simple state parameter.")
     p.add_argument("--fit-param", choices=FIT_PARAM_SELECTION_CHOICES)
     p.add_argument("--init-value", type=str)
@@ -375,7 +377,7 @@ def parse_args():
     p.add_argument("--grad-clip", type=float, default=1e4)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-json", type=str, required=True)
-    return p.parse_args()
+    return p.parse_args(argv)
 
 
 if __name__ == "__main__":

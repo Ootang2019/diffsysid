@@ -1,0 +1,12 @@
+{
+  "fit_param": "pole_damping",
+  "gt_value": "0.5",
+  "init_cart_pos": 0.0,
+  "init_pole_angle": 0.7853981633974483,
+  "angle_mode": "top_offset",
+  "init_cart_vel": 0.0,
+  "init_pole_angvel": 0.1,
+  "steps": 180,
+  "dt": 0.004166666666666667,
+  "output_json": "data/gt_datasets/cartpole_default_gt.json"
+}
