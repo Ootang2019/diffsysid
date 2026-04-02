@@ -3,13 +3,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import warp as wp
 import newton
 
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from gt_trajectory_common import load_ground_truth_json
 from util import (
+    DYNAMIC_PARAM_NAMES,
+    NONNEGATIVE_PARAM_NAMES,
     PARAM_SPECS,
     POLE_BODY_INDEX,
     POLE_TIP_LOCAL,
@@ -62,20 +70,51 @@ def point_mse_loss(pred: wp.array2d(dtype=float), target: wp.array2d(dtype=float
         wp.atomic_add(loss, 0, (dx * dx + dy * dy + dz * dz) / float(steps * 3))
 
 FIT_PARAM_CHOICES = tuple(PARAM_SPECS.keys())
+FIT_PARAM_SELECTION_CHOICES = FIT_PARAM_CHOICES + ("all", "all_dynamics")
 ANGLE_PARAMS = {"init_pole_angle"}
 
 
-def resolve_fit_request(args):
+def parse_numeric_init_values(raw_values) -> list[float]:
+    return [float(value) for value in raw_values]
+
+
+def sample_random_init_values(fit_params: list[str], gt_values_raw: np.ndarray, *, random_init_span: float, seed: int):
+    rng = np.random.default_rng(seed)
+    sampled = gt_values_raw + rng.uniform(-random_init_span, random_init_span, size=len(fit_params))
+    for i, name in enumerate(fit_params):
+        if name in NONNEGATIVE_PARAM_NAMES:
+            sampled[i] = max(0.0, sampled[i])
+    return sampled.astype(np.float64)
+
+
+def resolve_fit_request(args, *, default_fit_params: list[str] | None = None, target_value_map: dict[str, float] | None = None):
     fit_params = args.fit_params if args.fit_params is not None else ([args.fit_param] if args.fit_param is not None else None)
-    gt_values = args.gt_values if args.gt_values is not None else ([args.gt_value] if args.gt_value is not None else None)
-    init_values = args.init_values if args.init_values is not None else ([args.init_value] if args.init_value is not None else None)
-    if fit_params is None or gt_values is None or init_values is None:
-        raise ValueError("Specify either --fit-param/--gt-value/--init-value or --fit-params/--gt-values/--init-values.")
-    if not (len(fit_params) == len(gt_values) == len(init_values)):
-        raise ValueError("fit params, gt values, and init values must have the same length.")
+    init_values_raw = args.init_values if args.init_values is not None else ([args.init_value] if args.init_value is not None else None)
+    if fit_params is None:
+        fit_params = default_fit_params
+    if fit_params == ["all"]:
+        fit_params = list(FIT_PARAM_CHOICES)
+    if fit_params == ["all_dynamics"]:
+        fit_params = [name for name in FIT_PARAM_CHOICES if name in DYNAMIC_PARAM_NAMES]
+    if fit_params is None or init_values_raw is None:
+        raise ValueError("Specify fit params and init values. Ground truth is always loaded from --gt-json.")
     if len(set(fit_params)) != len(fit_params):
         raise ValueError("Duplicate fit params are not allowed.")
-    return list(fit_params), np.asarray(gt_values, dtype=np.float64), np.asarray(init_values, dtype=np.float64)
+    if len(fit_params) == 0:
+        raise ValueError("No fit params selected.")
+    if len(init_values_raw) == 1 and init_values_raw[0] == "random":
+        if target_value_map is None:
+            raise ValueError("Random init selection requires loaded ground-truth values.")
+        sampled = sample_random_init_values(
+            fit_params,
+            np.asarray([target_value_map[name] for name in fit_params], dtype=np.float64),
+            random_init_span=args.random_init_span,
+            seed=args.seed,
+        )
+        return list(fit_params), sampled
+    if len(init_values_raw) != len(fit_params):
+        raise ValueError("fit params and init values must have the same length, or use --init-values random.")
+    return list(fit_params), np.asarray(parse_numeric_init_values(init_values_raw), dtype=np.float64)
 
 
 def parameter_to_raw(name: str, value: float, angle_mode: str) -> float:
@@ -97,6 +136,48 @@ def make_model_with_params(fit_params: list[str], param_values: np.ndarray, fixe
     model = make_model(requires_grad=requires_grad, **params)
     grad_refs = [PARAM_SPECS[name] for name in fit_params]
     return model, grad_refs
+
+
+def build_fixed_parameters(args) -> dict[str, float]:
+    return {
+        "init_cart_pos": args.init_cart_pos,
+        "init_pole_angle": parameter_to_raw("init_pole_angle", args.init_pole_angle, args.angle_mode),
+        "init_cart_vel": args.init_cart_vel,
+        "init_pole_angvel": args.init_pole_angvel,
+        "cart_armature": args.cart_armature,
+        "cart_stiffness": args.cart_stiffness,
+        "cart_damping": args.cart_damping,
+        "pole_armature": args.pole_armature,
+        "pole_stiffness": args.pole_stiffness,
+        "pole_damping": args.pole_damping,
+    }
+
+
+def angle_convention_payload(args) -> dict:
+    return {
+        "mode": args.angle_mode,
+        "raw_zero_meaning": "pole hanging straight down",
+        "raw_upright_angle": UPRIGHT_RAW_ANGLE,
+        "top_offset_definition": "when mode=top_offset, reported angle = pi - raw_urdf_angle, so 0 means upright/top and positive values tilt toward negative world x",
+    }
+
+
+def load_or_generate_ground_truth(args):
+    if args.gt_json is None:
+        raise ValueError("--gt-json is required. Generate a ground-truth trajectory first.")
+    gt_data = load_ground_truth_json(args.gt_json)
+    return {
+        "fit_params": gt_data["fit_params"],
+        "gt_values_raw": np.asarray([gt_data["ground_truth_raw"][name] for name in gt_data["fit_params"]], dtype=np.float64),
+        "fixed": gt_data["fixed_raw"],
+        "gt_traj_np": gt_data["target_trajectory"],
+        "gt_traj": wp.array(gt_data["target_trajectory"], dtype=float),
+        "gt_q": gt_data["gt_q"],
+        "gt_qd": gt_data["gt_qd"],
+        "steps": gt_data["steps"],
+        "dt": gt_data["dt"],
+        "source": gt_data["path"],
+    }
 
 
 def evaluate(target_traj: wp.array, fit_params: list[str], param_values: np.ndarray, fixed: dict[str, float], steps: int, dt: float):
@@ -139,26 +220,20 @@ def evaluate(target_traj: wp.array, fit_params: list[str], param_values: np.ndar
 
 
 def run(args):
-    fit_params, gt_values_in, init_values_in = resolve_fit_request(args)
-    gt_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, gt_values_in)], dtype=np.float64)
-    init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
-    init_pole_angle_raw = parameter_to_raw("init_pole_angle", args.init_pole_angle, args.angle_mode)
-
-    fixed = {
-        "init_cart_pos": args.init_cart_pos,
-        "init_pole_angle": init_pole_angle_raw,
-        "init_cart_vel": args.init_cart_vel,
-        "init_pole_angvel": args.init_pole_angvel,
-        "cart_armature": args.cart_armature,
-        "cart_stiffness": args.cart_stiffness,
-        "cart_damping": args.cart_damping,
-        "pole_armature": args.pole_armature,
-        "pole_stiffness": args.pole_stiffness,
-        "pole_damping": args.pole_damping,
-    }
-    gt_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
-    gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
-    gt_traj = wp.array(gt_traj_np, dtype=float)
+    gt_source = load_or_generate_ground_truth(args)
+    gt_value_map = dict(zip(gt_source["fit_params"], gt_source["gt_values_raw"]))
+    target_value_map = {**gt_source["fixed"], **gt_value_map}
+    fit_params, init_values_in = resolve_fit_request(args, default_fit_params=gt_source["fit_params"], target_value_map=target_value_map)
+    init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) if isinstance(value, str) else float(value) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
+    missing = [name for name in fit_params if name not in target_value_map]
+    if missing:
+        raise ValueError(f"--gt-json is missing ground-truth values for fit params: {missing}")
+    fixed = dict(gt_source["fixed"])
+    steps = gt_source["steps"]
+    dt = gt_source["dt"]
+    gt_traj_np = gt_source["gt_traj_np"]
+    gt_traj = gt_source["gt_traj"]
+    gt_values_raw = np.asarray([target_value_map[name] for name in fit_params], dtype=np.float64)
 
     param_values = init_values_raw.copy()
     m = np.zeros_like(param_values)
@@ -168,11 +243,11 @@ def run(args):
     eps = 1e-8
 
     history: list[dict] = []
-    initial_metrics = evaluate(gt_traj, fit_params, param_values, fixed, args.steps, args.dt)
+    initial_metrics = evaluate(gt_traj, fit_params, param_values, fixed, steps, dt)
     best = {"param_values": param_values.copy(), **initial_metrics}
 
     for it in range(args.iters):
-        metrics = evaluate(gt_traj, fit_params, param_values, fixed, args.steps, args.dt)
+        metrics = evaluate(gt_traj, fit_params, param_values, fixed, steps, dt)
         history_entry = {
             "iteration": it,
             "loss": metrics["loss"],
@@ -196,21 +271,21 @@ def run(args):
         v_hat = v / (1.0 - beta2 ** (it + 1))
         param_values -= args.lr * m_hat / (np.sqrt(v_hat) + eps)
 
-    final_metrics = evaluate(gt_traj, fit_params, param_values, fixed, args.steps, args.dt)
+    final_metrics = evaluate(gt_traj, fit_params, param_values, fixed, steps, dt)
     if final_metrics["loss"] > best["loss"]:
         final_param_values = best["param_values"].copy()
-        final_metrics = evaluate(gt_traj, fit_params, final_param_values, fixed, args.steps, args.dt)
+        final_metrics = evaluate(gt_traj, fit_params, final_param_values, fixed, steps, dt)
         selection = "best_seen"
     else:
         final_param_values = param_values.copy()
         selection = "last_iter"
 
-    gt_replay_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
     init_replay_model, _ = make_model_with_params(fit_params, init_values_raw, fixed, requires_grad=False)
     fit_replay_model, _ = make_model_with_params(fit_params, final_param_values, fixed, requires_grad=False)
-    gt_q, gt_qd = rollout_joint_state_trajectory(gt_replay_model, args.steps, args.dt)
-    init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, args.steps, args.dt)
-    fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, args.steps, args.dt)
+    gt_q = gt_source["gt_q"]
+    gt_qd = gt_source["gt_qd"]
+    init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, steps, dt)
+    fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, steps, dt)
 
     fixed_display = {}
     for name, value in fixed.items():
@@ -241,20 +316,16 @@ def run(args):
         "loss_observable": "world trajectory of the pole tip point (local point [0,0,-1] on pole body)",
         "fit_param": fit_params[0] if len(fit_params) == 1 else None,
         "fit_params": fit_params,
-        "angle_convention": {
-            "mode": args.angle_mode,
-            "raw_zero_meaning": "pole hanging straight down",
-            "raw_upright_angle": UPRIGHT_RAW_ANGLE,
-            "top_offset_definition": "when mode=top_offset, reported angle = pi - raw_urdf_angle, so 0 means upright/top and positive values tilt toward negative world x",
-        },
+        "angle_convention": angle_convention_payload(args),
         "ground_truth": pack_param_section(gt_values_raw),
         "fixed_parameters": fixed_display,
         "initial_guess": pack_param_section(init_values_raw, include_metrics=initial_metrics),
         "final_fit": pack_param_section(final_param_values, include_metrics=final_metrics, include_selection=selection),
         "best_seen": pack_param_section(best["param_values"], include_metrics=best),
         "config": vars(args),
+        "ground_truth_source": args.gt_json,
         "replay": {
-            "time": (np.arange(args.steps + 1, dtype=np.float32) * args.dt).tolist(),
+            "time": (np.arange(steps + 1, dtype=np.float32) * dt).tolist(),
             "variants": {
                 "gt": {"joint_q": gt_q.tolist(), "joint_qd": gt_qd.tolist()},
                 "init": {"joint_q": init_q.tolist(), "joint_qd": init_qd.tolist()},
@@ -275,12 +346,10 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="URDF-imported cartpole sysID on one simple state parameter.")
-    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES)
-    p.add_argument("--gt-value", type=float)
-    p.add_argument("--init-value", type=float)
-    p.add_argument("--fit-params", nargs="+", choices=FIT_PARAM_CHOICES)
-    p.add_argument("--gt-values", nargs="+", type=float)
-    p.add_argument("--init-values", nargs="+", type=float)
+    p.add_argument("--fit-param", choices=FIT_PARAM_SELECTION_CHOICES)
+    p.add_argument("--init-value", type=str)
+    p.add_argument("--fit-params", nargs="+")
+    p.add_argument("--init-values", nargs="+")
     p.add_argument("--init-cart-pos", type=float, default=0.0)
     p.add_argument("--init-pole-angle", type=float, default=0.2)
     p.add_argument("--angle-mode", choices=["urdf_raw", "top_offset"], default="urdf_raw")
@@ -292,11 +361,12 @@ def parse_args():
     p.add_argument("--pole-armature", type=float, default=0.0)
     p.add_argument("--pole-stiffness", type=float, default=0.0)
     p.add_argument("--pole-damping", type=float, default=0.0)
-    p.add_argument("--steps", type=int, default=120)
-    p.add_argument("--dt", type=float, default=1.0 / 240.0)
-    p.add_argument("--iters", type=int, default=80)
+    p.add_argument("--gt-json", type=str, required=True)
+    p.add_argument("--random-init-span", type=float, default=0.25)
+    p.add_argument("--iters", "--iter", dest="iters", type=int, default=80)
     p.add_argument("--lr", type=float, default=0.01)
     p.add_argument("--grad-clip", type=float, default=1e4)
+    p.add_argument("--seed", type=int, default=0)
     p.add_argument("--output-json", type=str, required=True)
     return p.parse_args()
 

@@ -15,8 +15,8 @@ if str(SCRIPT_DIR) not in sys.path:
 
 from batch_sysid_common import annealed_noise_scale, apply_elite_restarts, compute_population_metrics
 from newton_double_pendulum_sysid import (
-    FIT_PARAM_CHOICES,
-    evaluate,
+    FIT_PARAM_SELECTION_CHOICES,
+    load_or_generate_ground_truth,
     make_model_with_params,
     parameter_to_raw,
     resolve_fit_request,
@@ -24,42 +24,107 @@ from newton_double_pendulum_sysid import (
     rollout_tip_trajectory,
     display_value,
 )
-from snippet_batch_sysid_common import build_trajectory_snippets, evaluate_population_snippets, resolve_snippet_steps
-from util import DYNAMIC_PARAM_NAMES, URDF_PATH
+from snippet_batch_sysid_common import build_trajectory_snippets, resolve_snippet_steps
+from util import DYNAMIC_PARAM_NAMES, NONNEGATIVE_PARAM_NAMES, PARAM_SPECS, TIP_BODY_INDEX, TIP_LOCAL, URDF_PATH
+from world_batch_sysid_common import evaluate_world_batch
 
 
-def evaluate_population(target_traj, fit_params: list[str], raw_params: np.ndarray, fixed: dict[str, float], steps: int, dt: float):
-    metrics = [evaluate(target_traj, fit_params, np.asarray(param, dtype=np.float64), fixed, steps, dt) for param in raw_params]
-    losses = np.asarray([m["loss"] for m in metrics], dtype=np.float64)
-    rmses = np.asarray([m["rmse"] for m in metrics], dtype=np.float64)
-    grads = np.asarray([[m["grads"][name] for name in fit_params] for m in metrics], dtype=np.float64)
-    return metrics, losses, rmses, grads
+def clamp_nonnegative_columns(raw_params: np.ndarray, fit_params: list[str]) -> None:
+    for i, name in enumerate(fit_params):
+        if name in NONNEGATIVE_PARAM_NAMES:
+            raw_params[:, i] = np.maximum(raw_params[:, i], 0.0)
+
+
+def evaluate_population_batched(
+    *,
+    fit_params: list[str],
+    raw_params: np.ndarray,
+    snippets,
+    dt: float,
+):
+    env_count = int(raw_params.shape[0])
+    snippet_count = len(snippets)
+    max_points = max(snippet.point_count for snippet in snippets)
+    world_count = env_count * snippet_count
+
+    target_batch_np = np.zeros((world_count, max_points, 3), dtype=np.float32)
+    point_counts = np.zeros(world_count, dtype=np.int32)
+    world_to_env = np.zeros(world_count, dtype=np.int32)
+    world_fixed = []
+    world_snippet_index = np.zeros(world_count, dtype=np.int32)
+
+    world_index = 0
+    for snippet in snippets:
+        for env_index in range(env_count):
+            target_batch_np[world_index, : snippet.point_count] = snippet.target_traj_np
+            point_counts[world_index] = snippet.point_count
+            world_to_env[world_index] = env_index
+            world_fixed.append(dict(snippet.fixed))
+            world_snippet_index[world_index] = snippet.snippet_index
+            world_index += 1
+
+    batch = evaluate_world_batch(
+        urdf_path=URDF_PATH,
+        param_specs=PARAM_SPECS,
+        fit_params=fit_params,
+        per_env_param_values=raw_params,
+        world_to_env=world_to_env,
+        world_fixed_params=world_fixed,
+        target_batch_np=target_batch_np,
+        point_counts=point_counts,
+        dt=dt,
+        tip_body_index=TIP_BODY_INDEX,
+        tip_local=TIP_LOCAL,
+    )
+
+    metrics = []
+    for env_index in range(env_count):
+        snippet_metrics = []
+        for world_idx in np.nonzero(world_to_env == env_index)[0]:
+            snippet = snippets[int(world_snippet_index[world_idx])]
+            snippet_metrics.append(
+                {
+                    "snippet_index": snippet.snippet_index,
+                    "start_step": snippet.start_step,
+                    "end_step": snippet.end_step,
+                    "loss": float(batch.world_losses[world_idx]),
+                    "rmse": float(batch.world_rmses[world_idx]),
+                }
+            )
+        env_metric = {
+            "loss": float(batch.losses[env_index]),
+            "rmse": float(batch.rmses[env_index]),
+            "grads": {name: float(batch.grads[env_index, i]) for i, name in enumerate(fit_params)},
+        }
+        if len(fit_params) == 1:
+            env_metric["grad"] = env_metric["grads"][fit_params[0]]
+        if len(snippets) > 1:
+            env_metric["snippet_metrics"] = snippet_metrics
+        else:
+            env_metric["trajectory"] = batch.world_trajectories[env_index, : snippets[0].point_count].tolist()
+        metrics.append(env_metric)
+    return metrics, batch.losses, batch.rmses, batch.grads
 
 
 def run(args):
-    fit_params, gt_values_in, init_values_in = resolve_fit_request(args)
-    gt_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, gt_values_in)], dtype=np.float64)
+    gt_source = load_or_generate_ground_truth(args)
+    gt_value_map = dict(zip(gt_source["fit_params"], gt_source["gt_values_raw"]))
+    target_value_map = {**gt_source["fixed"], **gt_value_map}
+    fit_params, init_values_in = resolve_fit_request(args, default_fit_params=gt_source["fit_params"], target_value_map=target_value_map)
     init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
-    fixed = {
-        "init_angle_1": parameter_to_raw("init_angle_1", args.init_angle_1, args.angle_mode),
-        "init_angle_2": parameter_to_raw("init_angle_2", args.init_angle_2, args.angle_mode),
-        "init_angvel_1": args.init_angvel_1,
-        "init_angvel_2": args.init_angvel_2,
-        "joint1_armature": args.joint1_armature,
-        "joint1_stiffness": args.joint1_stiffness,
-        "joint1_damping": args.joint1_damping,
-        "joint2_armature": args.joint2_armature,
-        "joint2_stiffness": args.joint2_stiffness,
-        "joint2_damping": args.joint2_damping,
-    }
+    missing = [name for name in fit_params if name not in target_value_map]
+    if missing:
+        raise ValueError(f"--gt-json is missing ground-truth values for fit params: {missing}")
+    fixed = dict(gt_source["fixed"])
+    steps = gt_source["steps"]
+    dt = gt_source["dt"]
+    gt_values_raw = np.asarray([target_value_map[name] for name in fit_params], dtype=np.float64)
+    gt_traj_np = gt_source["gt_traj_np"]
+    gt_q = gt_source["gt_q"]
+    gt_qd = gt_source["gt_qd"]
 
-    gt_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
-    gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
-    gt_traj = wp.array(gt_traj_np, dtype=float)
-    gt_q, gt_qd = rollout_joint_state_trajectory(gt_model, args.steps, args.dt)
-
-    snippet_steps = resolve_snippet_steps(args.steps, args.dt, args.snippet_steps, args.snippet_duration)
-    snippet_count = int(np.ceil(args.steps / max(1, snippet_steps)))
+    snippet_steps = resolve_snippet_steps(steps, dt, args.snippet_steps, args.snippet_duration)
+    snippet_count = int(np.ceil(steps / max(1, snippet_steps)))
     if snippet_count > 1 and any(name not in DYNAMIC_PARAM_NAMES for name in fit_params):
         raise ValueError("Long-horizon snippet batching currently supports dynamics parameters only. Initial-state fit params must use the standard full-trajectory batch mode.")
     snippets = build_trajectory_snippets(
@@ -78,21 +143,18 @@ def run(args):
         init_span = np.full(len(fit_params), float(init_span))
     raw_params = init_values_raw[None, :] + rng.uniform(-init_span, init_span, size=(args.env_count, len(fit_params)))
     raw_params[0] = init_values_raw
+    clamp_nonnegative_columns(raw_params, fit_params)
     init_raw_params = raw_params.copy()
     moment1 = np.zeros_like(raw_params)
     moment2 = np.zeros_like(raw_params)
 
     history: list[dict] = []
-    if snippet_count > 1:
-        initial_metrics, initial_losses, initial_rmses, _ = evaluate_population_snippets(
-            snippets=snippets,
-            fit_params=fit_params,
-            raw_params=raw_params,
-            dt=args.dt,
-            evaluate_fn=evaluate,
-        )
-    else:
-        initial_metrics, initial_losses, initial_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
+    initial_metrics, initial_losses, initial_rmses, _ = evaluate_population_batched(
+        fit_params=fit_params,
+        raw_params=raw_params,
+        snippets=snippets,
+        dt=dt,
+    )
     initial_best_idx = int(np.argmin(initial_losses))
     best = {"param_values": raw_params[initial_best_idx].copy(), "metrics": initial_metrics[initial_best_idx], "env_index": initial_best_idx, "iteration": -1}
 
@@ -102,16 +164,12 @@ def run(args):
     target_params = np.broadcast_to(gt_values_raw[None, :], raw_params.shape)
 
     for it in range(args.iters):
-        if snippet_count > 1:
-            metrics, env_loss, env_rmse, env_grad = evaluate_population_snippets(
-                snippets=snippets,
-                fit_params=fit_params,
-                raw_params=raw_params,
-                dt=args.dt,
-                evaluate_fn=evaluate,
-            )
-        else:
-            metrics, env_loss, env_rmse, env_grad = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
+        metrics, env_loss, env_rmse, env_grad = evaluate_population_batched(
+            fit_params=fit_params,
+            raw_params=raw_params,
+            snippets=snippets,
+            dt=dt,
+        )
         best_idx = int(np.argmin(env_loss))
         if env_loss[best_idx] < best["metrics"]["loss"]:
             best = {"param_values": raw_params[best_idx].copy(), "metrics": metrics[best_idx], "env_index": best_idx, "iteration": it}
@@ -136,7 +194,7 @@ def run(args):
         )
         if len(fit_params) == 1:
             history[-1]["best_param_value"] = float(raw_params[best_idx, 0])
-        if snippet_count > 1:
+        if "snippet_metrics" in metrics[best_idx]:
             history[-1]["best_snippet_metrics"] = metrics[best_idx]["snippet_metrics"]
         best_status = " ".join(f"{name}={raw_params[best_idx, i]:.6f}" for i, name in enumerate(fit_params))
         print(f"iter={it:03d} best_loss={env_loss[best_idx]:.6e} median_loss={pop.median_env_loss:.6e} best_rmse={env_rmse[best_idx]:.6e} {best_status}")
@@ -147,6 +205,7 @@ def run(args):
         m_hat = moment1 / (1.0 - beta1 ** (it + 1))
         v_hat = moment2 / (1.0 - beta2 ** (it + 1))
         raw_params -= args.lr * m_hat / (np.sqrt(v_hat) + eps)
+        clamp_nonnegative_columns(raw_params, fit_params)
 
         noise_scale = annealed_noise_scale(it + 1, args.restart_period, args.clone_noise_scale, args.min_clone_noise_scale, args.clone_decay)
         restart = apply_elite_restarts(
@@ -168,16 +227,12 @@ def run(args):
         if restart is not None:
             history[-1]["restart_event"] = {"restarted_envs": restart.restarted_envs, "parent_envs": restart.parent_envs, "elite_envs": restart.elite_envs, "random_restart_envs": restart.random_restart_envs, "noise_scale": restart.noise_scale}
 
-    if snippet_count > 1:
-        final_metrics_all, final_losses, final_rmses, _ = evaluate_population_snippets(
-            snippets=snippets,
-            fit_params=fit_params,
-            raw_params=raw_params,
-            dt=args.dt,
-            evaluate_fn=evaluate,
-        )
-    else:
-        final_metrics_all, final_losses, final_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
+    final_metrics_all, final_losses, final_rmses, _ = evaluate_population_batched(
+        fit_params=fit_params,
+        raw_params=raw_params,
+        snippets=snippets,
+        dt=dt,
+    )
     final_best_idx = int(np.argmin(final_losses))
     if final_losses[final_best_idx] < best["metrics"]["loss"]:
         best = {"param_values": raw_params[final_best_idx].copy(), "metrics": final_metrics_all[final_best_idx], "env_index": final_best_idx, "iteration": args.iters}
@@ -185,14 +240,12 @@ def run(args):
     init_param_values = init_raw_params[initial_best_idx].copy()
     fit_param_values = best["param_values"].copy()
 
-    gt_replay_model = gt_model
     init_replay_model, _ = make_model_with_params(fit_params, init_param_values, fixed, requires_grad=False)
     fit_replay_model, _ = make_model_with_params(fit_params, fit_param_values, fixed, requires_grad=False)
-    gt_q, gt_qd = rollout_joint_state_trajectory(gt_replay_model, args.steps, args.dt)
-    init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, args.steps, args.dt)
-    fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, args.steps, args.dt)
-    init_traj_np = rollout_tip_trajectory(init_replay_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
-    fit_traj_np = rollout_tip_trajectory(fit_replay_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
+    init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, steps, dt)
+    fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, steps, dt)
+    init_traj_np = rollout_tip_trajectory(init_replay_model, steps=steps, dt=dt, requires_grad=False).numpy()
+    fit_traj_np = rollout_tip_trajectory(fit_replay_model, steps=steps, dt=dt, requires_grad=False).numpy()
 
     def pack_param_section(raw_values: np.ndarray, *, include_metrics: dict | None = None, env_index: int | None = None):
         payload = {}
@@ -223,20 +276,21 @@ def run(args):
         "final_fit": {**pack_param_section(fit_param_values, include_metrics=best["metrics"]), "best_env_index": best["env_index"], "best_iteration": best["iteration"]},
         "final_population": {"raw_params": raw_params.astype(float).tolist(), "best_env_index": final_best_idx, "best_loss": float(final_losses[final_best_idx]), "best_rmse": float(final_rmses[final_best_idx])},
         "config": vars(args),
+        "ground_truth_source": args.gt_json,
         "snippet_batching": {
             "enabled": bool(snippet_count > 1),
             "snippet_steps": int(snippet_steps),
-            "snippet_duration": float(snippet_steps * args.dt),
+            "snippet_duration": float(snippet_steps * dt),
             "snippet_count": int(snippet_count),
             "env_count_per_snippet": int(args.env_count),
             "total_instances": int(args.env_count * snippet_count),
-            "snippets": [{"snippet_index": snippet.snippet_index, "start_step": snippet.start_step, "end_step": snippet.end_step, "start_time": float(snippet.start_step * args.dt), "end_time": float(snippet.end_step * args.dt), "point_count": snippet.point_count} for snippet in snippets],
+            "snippets": [{"snippet_index": snippet.snippet_index, "start_step": snippet.start_step, "end_step": snippet.end_step, "start_time": float(snippet.start_step * dt), "end_time": float(snippet.end_step * dt), "point_count": snippet.point_count} for snippet in snippets],
         },
         "history": history,
         "target_trajectory": gt_traj_np.tolist(),
         "initial_prediction": init_traj_np.tolist(),
         "final_prediction": fit_traj_np.tolist(),
-        "replay": {"time": (np.arange(args.steps + 1, dtype=np.float32) * args.dt).tolist(), "variants": {"gt": {"joint_q": gt_q.tolist(), "joint_qd": gt_qd.tolist()}, "init": {"joint_q": init_q.tolist(), "joint_qd": init_qd.tolist()}, "fit": {"joint_q": fit_q.tolist(), "joint_qd": fit_qd.tolist()}}},
+        "replay": {"time": (np.arange(steps + 1, dtype=np.float32) * dt).tolist(), "variants": {"gt": {"joint_q": gt_q.tolist(), "joint_qd": gt_qd.tolist()}, "init": {"joint_q": init_q.tolist(), "joint_qd": init_qd.tolist()}, "fit": {"joint_q": fit_q.tolist(), "joint_qd": fit_qd.tolist()}}},
     }
     out = Path(args.output_json)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -246,12 +300,10 @@ def run(args):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Shared-population batch sysID for the URDF double pendulum.")
-    p.add_argument("--fit-param", choices=FIT_PARAM_CHOICES)
-    p.add_argument("--gt-value", type=float)
-    p.add_argument("--init-value", type=float)
-    p.add_argument("--fit-params", nargs="+", choices=FIT_PARAM_CHOICES)
-    p.add_argument("--gt-values", nargs="+", type=float)
-    p.add_argument("--init-values", nargs="+", type=float)
+    p.add_argument("--fit-param", choices=FIT_PARAM_SELECTION_CHOICES)
+    p.add_argument("--init-value", type=str)
+    p.add_argument("--fit-params", nargs="+")
+    p.add_argument("--init-values", nargs="+")
     p.add_argument("--init-span", type=float, default=0.25)
     p.add_argument("--init-angle-1", dest="init_angle_1", type=float, default=0.2)
     p.add_argument("--init-angle-2", dest="init_angle_2", type=float, default=0.1)
@@ -265,11 +317,11 @@ def parse_args():
     p.add_argument("--joint2-stiffness", type=float, default=0.0)
     p.add_argument("--joint2-damping", type=float, default=0.0)
     p.add_argument("--env-count", type=int, default=8)
-    p.add_argument("--steps", type=int, default=120)
-    p.add_argument("--dt", type=float, default=1.0 / 240.0)
+    p.add_argument("--gt-json", type=str, required=True)
+    p.add_argument("--random-init-span", type=float, default=0.25)
     p.add_argument("--snippet-steps", type=int, default=None)
     p.add_argument("--snippet-duration", type=float, default=None)
-    p.add_argument("--iters", type=int, default=40)
+    p.add_argument("--iters", "--iter", dest="iters", type=int, default=40)
     p.add_argument("--lr", type=float, default=0.01)
     p.add_argument("--grad-clip", type=float, default=1e4)
     p.add_argument("--restart-period", type=int, default=10)

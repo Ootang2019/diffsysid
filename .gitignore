@@ -7,6 +7,7 @@ __pycache__/
 *.npz
 *.npy
 
+data/gt_datasets/*
 data/raw/*
 data/processed/*
 outputs/*
