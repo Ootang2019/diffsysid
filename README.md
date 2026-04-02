@@ -192,6 +192,12 @@ PYTHONPATH=. python scripts/double_pendulum/render_sysid_summary.py \
 
 The batch scripts also support both scalar and multi-parameter fitting. In batch mode, each environment carries its own candidate parameter vector and elite restart operates on that full vector.
 
+For longer ground-truth trajectories, batch sysid also supports snippet mode:
+- keep `--steps` as the full ground-truth horizon
+- set either `--snippet-duration` or `--snippet-steps` to break that long horizon into shorter windows
+- each optimization candidate is then evaluated on every snippet, so total rollout instances become `snippet_count * env_count`
+- multi-snippet mode currently supports dynamics-parameter fitting only, because each snippet starts from the ground-truth state at that window boundary
+
 Cartpole:
 
 ```bash
@@ -280,6 +286,23 @@ PYTHONPATH=. python scripts/pendulum/newton_pendulum_batch_sysid.py \
   --output-json outputs/newton_pendulum_batch_sysid/dynamics_hinge_stiffness_run.json
 ```
 
+Long-horizon snippet example, cartpole batch:
+
+```bash
+PYTHONPATH=. python scripts/cartpole/newton_cartpole_batch_sysid.py \
+  --fit-param pole_damping \
+  --gt-value 0.50 \
+  --init-value 1.00 \
+  --init-span 0.2 \
+  --env-count 16 \
+  --steps 720 \
+  --snippet-duration 0.5 \
+  --iters 10 \
+  --output-json outputs/newton_cartpole_batch_sysid/long_horizon_snippet_run.json
+```
+
+With the default `dt = 1/240`, that example uses a 3-second ground-truth rollout, splits it into six 0.5-second snippets, and evaluates `6 * 16 = 96` rollout instances per optimization iteration.
+
 ### 4. Batch summary and compare render
 
 Each per-robot `render_batch_sysid_summary.py` wrapper generates the batch summary JSON/PNG and the stitched `gt | init | fit` compare render beside the selected batch `result.json`.
@@ -333,6 +356,12 @@ Expected artifacts:
 - `summary.png`
 - `compare/...gif`
 - `compare/...mp4`
+
+Snippet-enabled batch runs also record a `snippet_batching` section in the result JSON with:
+- snippet count
+- snippet step/time ranges
+- per-snippet env count
+- total rollout instance count
 
 Typical layout:
 

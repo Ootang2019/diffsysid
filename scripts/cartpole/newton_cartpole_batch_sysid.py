@@ -24,7 +24,8 @@ from newton_cartpole_sysid import (
     rollout_tip_trajectory,
     display_param,
 )
-from util import URDF_PATH
+from snippet_batch_sysid_common import build_trajectory_snippets, evaluate_population_snippets, resolve_snippet_steps
+from util import DYNAMIC_PARAM_NAMES, URDF_PATH
 
 
 def evaluate_population(target_traj, fit_params: list[str], raw_params: np.ndarray, fixed: dict[str, float], steps: int, dt: float):
@@ -57,6 +58,21 @@ def run(args):
     gt_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
     gt_traj_np = rollout_tip_trajectory(gt_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
     gt_traj = wp.array(gt_traj_np, dtype=float)
+    gt_q, gt_qd = rollout_joint_state_trajectory(gt_model, args.steps, args.dt)
+
+    snippet_steps = resolve_snippet_steps(args.steps, args.dt, args.snippet_steps, args.snippet_duration)
+    snippet_count = int(np.ceil(args.steps / max(1, snippet_steps)))
+    if snippet_count > 1 and any(name not in DYNAMIC_PARAM_NAMES for name in fit_params):
+        raise ValueError("Long-horizon snippet batching currently supports dynamics parameters only. Initial-state fit params must use the standard full-trajectory batch mode.")
+    snippets = build_trajectory_snippets(
+        target_traj_np=gt_traj_np,
+        gt_q=gt_q,
+        gt_qd=gt_qd,
+        base_fixed=fixed,
+        q_param_names=["init_cart_pos", "init_pole_angle"],
+        qd_param_names=["init_cart_vel", "init_pole_angvel"],
+        snippet_steps=snippet_steps,
+    )
 
     rng = np.random.default_rng(args.seed)
     init_span = np.asarray(args.init_span, dtype=np.float64)
@@ -69,7 +85,16 @@ def run(args):
     moment2 = np.zeros_like(raw_params)
 
     history: list[dict] = []
-    initial_metrics, initial_losses, initial_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
+    if snippet_count > 1:
+        initial_metrics, initial_losses, initial_rmses, _ = evaluate_population_snippets(
+            snippets=snippets,
+            fit_params=fit_params,
+            raw_params=raw_params,
+            dt=args.dt,
+            evaluate_fn=evaluate,
+        )
+    else:
+        initial_metrics, initial_losses, initial_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
     initial_best_idx = int(np.argmin(initial_losses))
     best = {
         "param_values": raw_params[initial_best_idx].copy(),
@@ -84,7 +109,16 @@ def run(args):
     target_params = np.broadcast_to(gt_values_raw[None, :], raw_params.shape)
 
     for it in range(args.iters):
-        metrics, env_loss, env_rmse, env_grad = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
+        if snippet_count > 1:
+            metrics, env_loss, env_rmse, env_grad = evaluate_population_snippets(
+                snippets=snippets,
+                fit_params=fit_params,
+                raw_params=raw_params,
+                dt=args.dt,
+                evaluate_fn=evaluate,
+            )
+        else:
+            metrics, env_loss, env_rmse, env_grad = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
         best_idx = int(np.argmin(env_loss))
         if env_loss[best_idx] < best["metrics"]["loss"]:
             best = {"param_values": raw_params[best_idx].copy(), "metrics": metrics[best_idx], "env_index": best_idx, "iteration": it}
@@ -104,10 +138,14 @@ def run(args):
                 "distance_to_target_mean": pop.distance_to_target_mean,
                 "distance_to_target_best": pop.distance_to_target_best,
                 "within_tol_fraction": pop.within_tol_fraction,
+                "snippet_count": snippet_count,
+                "total_instances": int(args.env_count * snippet_count),
             }
         )
         if len(fit_params) == 1:
             history[-1]["best_param_value"] = float(raw_params[best_idx, 0])
+        if snippet_count > 1:
+            history[-1]["best_snippet_metrics"] = metrics[best_idx]["snippet_metrics"]
         print(
             f"iter={it:03d} best_loss={env_loss[best_idx]:.6e} median_loss={pop.median_env_loss:.6e} "
             f"best_rmse={env_rmse[best_idx]:.6e} "
@@ -147,7 +185,16 @@ def run(args):
                 "noise_scale": restart.noise_scale,
             }
 
-    final_metrics_all, final_losses, final_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
+    if snippet_count > 1:
+        final_metrics_all, final_losses, final_rmses, _ = evaluate_population_snippets(
+            snippets=snippets,
+            fit_params=fit_params,
+            raw_params=raw_params,
+            dt=args.dt,
+            evaluate_fn=evaluate,
+        )
+    else:
+        final_metrics_all, final_losses, final_rmses, _ = evaluate_population(gt_traj, fit_params, raw_params, fixed, args.steps, args.dt)
     final_best_idx = int(np.argmin(final_losses))
     if final_losses[final_best_idx] < best["metrics"]["loss"]:
         best = {"param_values": raw_params[final_best_idx].copy(), "metrics": final_metrics_all[final_best_idx], "env_index": final_best_idx, "iteration": args.iters}
@@ -155,12 +202,14 @@ def run(args):
     init_param_values = init_raw_params[initial_best_idx].copy()
     fit_param_values = best["param_values"].copy()
 
-    gt_replay_model, _ = make_model_with_params(fit_params, gt_values_raw, fixed, requires_grad=False)
+    gt_replay_model = gt_model
     init_replay_model, _ = make_model_with_params(fit_params, init_param_values, fixed, requires_grad=False)
     fit_replay_model, _ = make_model_with_params(fit_params, fit_param_values, fixed, requires_grad=False)
     gt_q, gt_qd = rollout_joint_state_trajectory(gt_replay_model, args.steps, args.dt)
     init_q, init_qd = rollout_joint_state_trajectory(init_replay_model, args.steps, args.dt)
     fit_q, fit_qd = rollout_joint_state_trajectory(fit_replay_model, args.steps, args.dt)
+    init_traj_np = rollout_tip_trajectory(init_replay_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
+    fit_traj_np = rollout_tip_trajectory(fit_replay_model, steps=args.steps, dt=args.dt, requires_grad=False).numpy()
 
     def pack_param_section(raw_values: np.ndarray, *, include_metrics: dict | None = None, env_index: int | None = None):
         payload = {}
@@ -174,6 +223,8 @@ def run(args):
                 payload["grad"] = float(include_metrics["grads"][fit_params[0]])
             else:
                 payload["grads"] = include_metrics["grads"]
+            if "snippet_metrics" in include_metrics:
+                payload["snippet_metrics"] = include_metrics["snippet_metrics"]
         if env_index is not None:
             payload["env_index"] = int(env_index)
         return payload
@@ -193,6 +244,8 @@ def run(args):
             "center_raw": init_values_raw.astype(float).tolist(),
             "span": init_span.astype(float).tolist(),
             "env_count": args.env_count,
+            "env_count_per_snippet": args.env_count,
+            "total_instances": int(args.env_count * snippet_count),
             "raw_params": init_raw_params.astype(float).tolist(),
         },
         "final_fit": {**pack_param_section(fit_param_values, include_metrics=best["metrics"]), "best_env_index": best["env_index"], "best_iteration": best["iteration"]},
@@ -203,10 +256,29 @@ def run(args):
             "best_rmse": float(final_rmses[final_best_idx]),
         },
         "config": vars(args),
+        "snippet_batching": {
+            "enabled": bool(snippet_count > 1),
+            "snippet_steps": int(snippet_steps),
+            "snippet_duration": float(snippet_steps * args.dt),
+            "snippet_count": int(snippet_count),
+            "env_count_per_snippet": int(args.env_count),
+            "total_instances": int(args.env_count * snippet_count),
+            "snippets": [
+                {
+                    "snippet_index": snippet.snippet_index,
+                    "start_step": snippet.start_step,
+                    "end_step": snippet.end_step,
+                    "start_time": float(snippet.start_step * args.dt),
+                    "end_time": float(snippet.end_step * args.dt),
+                    "point_count": snippet.point_count,
+                }
+                for snippet in snippets
+            ],
+        },
         "history": history,
         "target_trajectory": gt_traj_np.tolist(),
-        "initial_prediction": initial_metrics[initial_best_idx]["trajectory"].tolist(),
-        "final_prediction": best["metrics"]["trajectory"].tolist(),
+        "initial_prediction": init_traj_np.tolist(),
+        "final_prediction": fit_traj_np.tolist(),
         "replay": {
             "time": (np.arange(args.steps + 1, dtype=np.float32) * args.dt).tolist(),
             "variants": {
@@ -245,6 +317,8 @@ def parse_args():
     p.add_argument("--env-count", type=int, default=8)
     p.add_argument("--steps", type=int, default=120)
     p.add_argument("--dt", type=float, default=1.0 / 240.0)
+    p.add_argument("--snippet-steps", type=int, default=None)
+    p.add_argument("--snippet-duration", type=float, default=None)
     p.add_argument("--iters", type=int, default=40)
     p.add_argument("--lr", type=float, default=0.01)
     p.add_argument("--grad-clip", type=float, default=1e4)
