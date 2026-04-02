@@ -1,0 +1,20 @@
+{
+  "single": {
+    "gt_json": "data/gt_datasets/slide_cube_friction_gt.json",
+    "fit_param": "friction_coeff",
+    "init_value": 0.6,
+    "iters": 25,
+    "lr": 0.25,
+    "output_json": "outputs/slide_cube/sysid/result.json"
+  },
+  "batch": {
+    "gt_json": "data/gt_datasets/slide_cube_friction_gt.json",
+    "fit_param": "friction_coeff",
+    "init_value": 0.6,
+    "env_count": 8,
+    "init_span": 0.2,
+    "iters": 30,
+    "lr": 0.1,
+    "output_json": "outputs/slide_cube/batch_sysid/result.json"
+  }
+}

@@ -2,10 +2,11 @@
 
 Differentiable system identification with NVIDIA Newton + Warp.
 
-This repo currently focuses on three URDF-backed systems:
+This repo currently focuses on four per-robot workflows:
 - cartpole
 - pendulum
 - double pendulum
+- slide_cube (URDF-backed free-body contact/friction sysID on a ground plane)
 
 Each system supports:
 - saved ground-truth trajectory generation
@@ -26,7 +27,8 @@ diffsysid/
 │   ├── urdf/
 │   │   ├── cartpole.urdf
 │   │   ├── pendulum.urdf
-│   │   └── double_pendulum.urdf
+│   │   ├── double_pendulum.urdf
+│   │   └── slide_cube.urdf
 │   └── gt_datasets/                  # Saved ground-truth rollout JSON files
 ├── scripts/
 │   ├── gt_trajectory_common.py       # Shared saved-ground-truth helpers
@@ -34,7 +36,8 @@ diffsysid/
 │   ├── stitch_triptych_frames.py     # Shared frame stitching helper
 │   ├── cartpole/
 │   ├── pendulum/
-│   └── double_pendulum/
+│   ├── double_pendulum/
+│   └── slide_cube/
 ├── outputs/                           # Result JSON, summary PNG, GIF, MP4
 ├── .venv/                             # Repo-local Python environment
 ├── requirements.txt
@@ -100,6 +103,15 @@ PYTHONPATH=. python scripts/double_pendulum/generate_double_pendulum_gt.py \
   --gt-value 8.0 \
   --steps 120 \
   --output-json data/gt_datasets/double_pendulum_joint2_stiffness_gt.json
+```
+
+Slide cube contact/friction:
+
+```bash
+PYTHONPATH=. python scripts/slide_cube/generate_slide_cube_gt.py \
+  --gt-value 0.20 \
+  --steps 60 \
+  --output-json data/gt_datasets/slide_cube_friction_gt.json
 ```
 
 Long-horizon cartpole example:
@@ -187,6 +199,17 @@ PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_sysid.py \
   --init-value 8.5 \
   --iters 80 \
   --output-json outputs/newton_double_pendulum_sysid/result.json
+```
+
+Slide cube contact/friction:
+
+```bash
+PYTHONPATH=. python scripts/slide_cube/newton_slide_cube_sysid.py \
+  --gt-json data/gt_datasets/slide_cube_friction_gt.json \
+  --init-value 0.60 \
+  --iters 25 \
+  --lr 0.25 \
+  --output-json outputs/slide_cube/sysid/result.json
 ```
 
 Multi-parameter example, cartpole:
@@ -277,6 +300,13 @@ PYTHONPATH=. python scripts/double_pendulum/render_sysid_summary.py \
   outputs/newton_double_pendulum_sysid/result.json
 ```
 
+Slide cube:
+
+```bash
+PYTHONPATH=. python scripts/slide_cube/render_sysid_summary.py \
+  outputs/slide_cube/sysid/result.json
+```
+
 ### 4. Batch sysid
 
 The batch scripts also always fit against a saved trajectory loaded from `--gt-json`.
@@ -337,6 +367,17 @@ PYTHONPATH=. python scripts/double_pendulum/newton_double_pendulum_batch_sysid.p
   --env-count 8 \
   --iters 40 \
   --output-json outputs/newton_double_pendulum_batch_sysid/result.json
+```
+
+Slide cube:
+
+```bash
+PYTHONPATH=. python scripts/slide_cube/newton_slide_cube_batch_sysid.py \
+  --gt-json data/gt_datasets/slide_cube_friction_gt.json \
+  --init-value 0.60 \
+  --env-count 8 \
+  --iters 30 \
+  --output-json outputs/slide_cube/batch_sysid/result.json
 ```
 
 Multi-parameter example, cartpole batch:
@@ -444,6 +485,13 @@ PYTHONPATH=. python scripts/double_pendulum/render_batch_sysid_summary.py \
   outputs/newton_double_pendulum_batch_sysid/result.json
 ```
 
+Slide cube:
+
+```bash
+PYTHONPATH=. python scripts/slide_cube/render_batch_sysid_summary.py \
+  outputs/slide_cube/batch_sysid/result.json
+```
+
 ## Supported systems
 
 | System | Single-run sysid | Batch sysid | Summary wrapper | Batch summary wrapper |
@@ -451,11 +499,13 @@ PYTHONPATH=. python scripts/double_pendulum/render_batch_sysid_summary.py \
 | Cartpole | `scripts/cartpole/newton_cartpole_sysid.py` | `scripts/cartpole/newton_cartpole_batch_sysid.py` | `scripts/cartpole/render_sysid_summary.py` | `scripts/cartpole/render_batch_sysid_summary.py` |
 | Pendulum | `scripts/pendulum/newton_pendulum_sysid.py` | `scripts/pendulum/newton_pendulum_batch_sysid.py` | `scripts/pendulum/render_sysid_summary.py` | `scripts/pendulum/render_batch_sysid_summary.py` |
 | Double pendulum | `scripts/double_pendulum/newton_double_pendulum_sysid.py` | `scripts/double_pendulum/newton_double_pendulum_batch_sysid.py` | `scripts/double_pendulum/render_sysid_summary.py` | `scripts/double_pendulum/render_batch_sysid_summary.py` |
+| Slide cube | `scripts/slide_cube/newton_slide_cube_sysid.py` | `scripts/slide_cube/newton_slide_cube_batch_sysid.py` | `scripts/slide_cube/render_sysid_summary.py` | `scripts/slide_cube/render_batch_sysid_summary.py` |
 
 Current fit parameters:
 - cartpole: `init_pole_angle`, `init_cart_pos`, `init_cart_vel`, `init_pole_angvel`, `cart_armature`, `cart_stiffness`, `cart_damping`, `pole_armature`, `pole_stiffness`, `pole_damping`
 - pendulum: `init_angle`, `init_angvel`, `hinge_armature`, `hinge_stiffness`, `hinge_damping`
 - double pendulum: `init_angle_1`, `init_angle_2`, `init_angvel_1`, `init_angvel_2`, `joint1_armature`, `joint1_stiffness`, `joint1_damping`, `joint2_armature`, `joint2_stiffness`, `joint2_damping`
+- slide_cube: `friction_coeff`
 
 Dynamics-only aliases:
 - cartpole: `cart_armature`, `cart_stiffness`, `cart_damping`, `pole_armature`, `pole_stiffness`, `pole_damping`
@@ -504,6 +554,7 @@ Batch runs use the same layout pattern under:
 - `outputs/newton_cartpole_batch_sysid/`
 - `outputs/newton_pendulum_batch_sysid/`
 - `outputs/newton_double_pendulum_batch_sysid/`
+- `outputs/slide_cube/batch_sysid/`
 
 Current behavior:
 - summary wrappers always write `summary.json` and `summary.png` to the result file's parent directory
@@ -518,9 +569,11 @@ Lower-level helpers still exist when you want finer control:
 - `scripts/cartpole/render_newton_cartpole.py`
 - `scripts/pendulum/render_newton_pendulum.py`
 - `scripts/double_pendulum/render_newton_double_pendulum.py`
+- `scripts/slide_cube/render_newton_slide_cube.py`
 - `scripts/cartpole/render_compare_cartpole.py`
 - `scripts/pendulum/render_compare_pendulum.py`
 - `scripts/double_pendulum/render_compare_double_pendulum.py`
+- `scripts/slide_cube/render_compare_slide_cube.py`
 
 ## Troubleshooting
 

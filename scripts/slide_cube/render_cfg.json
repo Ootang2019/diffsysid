@@ -1,0 +1,10 @@
+{
+  "single": {
+    "result_json": "outputs/slide_cube/sysid/result.json",
+    "output_dir": "outputs/slide_cube/sysid/compare"
+  },
+  "batch": {
+    "result_json": "outputs/slide_cube/batch_sysid/result.json",
+    "output_dir": "outputs/slide_cube/batch_sysid/compare"
+  }
+}
