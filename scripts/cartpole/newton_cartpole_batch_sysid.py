@@ -186,6 +186,7 @@ def run(args):
                 "iteration": it,
                 "best_env_index": best_idx,
                 "best_loss": float(env_loss[best_idx]),
+                "mean_loss": float(np.mean(env_loss)),
                 "best_rmse": float(env_rmse[best_idx]),
                 "best_param_values": best_params,
                 "median_loss": pop.median_env_loss,
@@ -248,8 +249,9 @@ def run(args):
         snippets=snippets,
         dt=dt,
     )
-    final_best_idx = int(np.argmin(final_losses))
-    if final_losses[final_best_idx] < best["metrics"]["loss"]:
+    finite_final_losses = np.where(np.isfinite(final_losses), final_losses, np.inf)
+    final_best_idx = int(np.argmin(finite_final_losses))
+    if np.isfinite(finite_final_losses[final_best_idx]) and finite_final_losses[final_best_idx] < best["metrics"]["loss"]:
         best = {"param_values": raw_params[final_best_idx].copy(), "metrics": final_metrics_all[final_best_idx], "env_index": final_best_idx, "iteration": args.iters}
 
     init_param_values = init_raw_params[initial_best_idx].copy()

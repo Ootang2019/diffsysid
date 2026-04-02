@@ -235,7 +235,14 @@ def run(args):
     gt_value_map = dict(zip(gt_source["fit_params"], gt_source["gt_values_raw"]))
     target_value_map = {**gt_source["fixed"], **gt_value_map}
     fit_params, init_values_in = resolve_fit_request(args, default_fit_params=gt_source["fit_params"], target_value_map=target_value_map)
-    init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) if isinstance(value, str) else float(value) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
+    init_values_are_raw = args.init_value == "random" or args.init_values == ["random"]
+    init_values_raw = np.asarray(
+        [
+            float(value) if init_values_are_raw else parameter_to_raw(name, value, args.angle_mode)
+            for name, value in zip(fit_params, init_values_in)
+        ],
+        dtype=np.float64,
+    )
     missing = [name for name in fit_params if name not in target_value_map]
     if missing:
         raise ValueError(f"--gt-json is missing ground-truth values for fit params: {missing}")
@@ -259,23 +266,29 @@ def run(args):
 
     for it in range(args.iters):
         metrics = evaluate(gt_traj, fit_params, param_values, fixed, steps, dt)
+        safe_loss = float(metrics["loss"]) if np.isfinite(metrics["loss"]) else float("inf")
+        safe_rmse = float(metrics["rmse"]) if np.isfinite(metrics["rmse"]) else float("inf")
+        safe_grads = {
+            name: float(np.nan_to_num(metrics["grads"][name], nan=0.0, posinf=args.grad_clip, neginf=-args.grad_clip))
+            for name in fit_params
+        }
         history_entry = {
             "iteration": it,
-            "loss": metrics["loss"],
-            "rmse": metrics["rmse"],
+            "loss": safe_loss,
+            "rmse": safe_rmse,
             "param_values": {name: float(value) for name, value in zip(fit_params, param_values)},
-            "grads": metrics["grads"],
+            "grads": safe_grads,
         }
         if len(fit_params) == 1:
             history_entry["param_value"] = float(param_values[0])
-            history_entry["grad"] = float(metrics["grads"][fit_params[0]])
+            history_entry["grad"] = float(safe_grads[fit_params[0]])
         history.append(history_entry)
         status = " ".join(f"{name}={value:.6f}" for name, value in zip(fit_params, param_values))
-        grad_status = " ".join(f"{name}_grad={metrics['grads'][name]:.6e}" for name in fit_params)
-        print(f"iter={it:03d} loss={metrics['loss']:.6e} rmse={metrics['rmse']:.6e} {status} {grad_status}")
-        if metrics["loss"] < best["loss"]:
+        grad_status = " ".join(f"{name}_grad={safe_grads[name]:.6e}" for name in fit_params)
+        print(f"iter={it:03d} loss={safe_loss:.6e} rmse={safe_rmse:.6e} {status} {grad_status}")
+        if np.isfinite(safe_loss) and safe_loss < best["loss"]:
             best = {"param_values": param_values.copy(), **metrics}
-        g = np.clip(np.asarray([metrics["grads"][name] for name in fit_params], dtype=np.float64), -args.grad_clip, args.grad_clip)
+        g = np.clip(np.asarray([safe_grads[name] for name in fit_params], dtype=np.float64), -args.grad_clip, args.grad_clip)
         m = beta1 * m + (1.0 - beta1) * g
         v = beta2 * v + (1.0 - beta2) * (g * g)
         m_hat = m / (1.0 - beta1 ** (it + 1))
@@ -283,7 +296,7 @@ def run(args):
         param_values -= args.lr * m_hat / (np.sqrt(v_hat) + eps)
 
     final_metrics = evaluate(gt_traj, fit_params, param_values, fixed, steps, dt)
-    if final_metrics["loss"] > best["loss"]:
+    if (not np.isfinite(final_metrics["loss"])) or final_metrics["loss"] > best["loss"]:
         final_param_values = best["param_values"].copy()
         final_metrics = evaluate(gt_traj, fit_params, final_param_values, fixed, steps, dt)
         selection = "best_seen"

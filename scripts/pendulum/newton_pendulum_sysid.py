@@ -219,7 +219,14 @@ def run(args):
     gt_value_map = dict(zip(gt_source["fit_params"], gt_source["gt_values_raw"]))
     target_value_map = {**gt_source["fixed"], **gt_value_map}
     fit_params, init_values_in = resolve_fit_request(args, default_fit_params=gt_source["fit_params"], target_value_map=target_value_map)
-    init_values_raw = np.asarray([parameter_to_raw(name, value, args.angle_mode) if isinstance(value, str) else float(value) for name, value in zip(fit_params, init_values_in)], dtype=np.float64)
+    init_values_are_raw = args.init_value == "random" or args.init_values == ["random"]
+    init_values_raw = np.asarray(
+        [
+            float(value) if init_values_are_raw else parameter_to_raw(name, value, args.angle_mode)
+            for name, value in zip(fit_params, init_values_in)
+        ],
+        dtype=np.float64,
+    )
     missing = [name for name in fit_params if name not in target_value_map]
     if missing:
         raise ValueError(f"--gt-json is missing ground-truth values for fit params: {missing}")
@@ -267,7 +274,7 @@ def run(args):
         param_values -= args.lr * m_hat / (np.sqrt(v_hat) + eps)
 
     final_metrics = evaluate(gt_traj, fit_params, param_values, fixed, steps, dt)
-    if final_metrics["loss"] > best["loss"]:
+    if (not np.isfinite(final_metrics["loss"])) or final_metrics["loss"] > best["loss"]:
         final_param_values = best["param_values"].copy()
         final_metrics = evaluate(gt_traj, fit_params, final_param_values, fixed, steps, dt)
         selection = "best_seen"

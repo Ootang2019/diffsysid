@@ -9,6 +9,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from diffsysid.render import draw_panel, load_font
+from worst_batch_init_common import maybe_apply_worst_initial
 
 W = 1480
 H = 920
@@ -68,7 +69,8 @@ def draw_horizontal(draw: ImageDraw.ImageDraw, value: float, bounds, rect, color
 
 
 def load_result(path: Path) -> dict:
-    return json.loads(path.read_text())
+    data = json.loads(path.read_text())
+    return maybe_apply_worst_initial(data, result_json=path)
 
 
 def get_fit_params(data: dict) -> list[str]:
@@ -151,6 +153,19 @@ def build_summary(data: dict, result_path: Path) -> dict:
             "min_rmse_iteration": None if not history else int(np.argmin([x.get("rmse", x.get("best_rmse")) for x in history])),
         },
     }
+    if history and "best_loss" in history[0]:
+        best_loss_series = np.array([h["best_loss"] for h in history], dtype=float)
+        batch_curves = {
+            "current_best_loss": best_loss_series.tolist(),
+            "best_so_far_loss": np.minimum.accumulate(best_loss_series).tolist(),
+        }
+        if "mean_loss" in history[0]:
+            batch_curves["mean_loss"] = np.array([h["mean_loss"] for h in history], dtype=float).tolist()
+        if "median_loss" in history[0]:
+            batch_curves["median_loss"] = np.array([h["median_loss"] for h in history], dtype=float).tolist()
+        if "worst_loss" in history[0]:
+            batch_curves["worst_loss"] = np.array([h["worst_loss"] for h in history], dtype=float).tolist()
+        summary["batch_curves"] = batch_curves
     return summary
 
 
@@ -180,21 +195,52 @@ def make_summary_png(data: dict, summary: dict, out_path: Path):
     rect_tip = (28, 500, 980, 892)
     rect_text = (1008, 500, 1452, 892)
 
-    draw_panel(draw, rect_loss, "Optimization curves", FONT, FONT_SMALL, fill=PANEL, text=TEXT, muted=MUTED, subtitle="Loss and RMSE across training iterations.", outline=BORDER)
+    is_batch = bool(hist) and ("best_loss" in hist[0])
+    loss_subtitle = "Batch search curves across training iterations." if is_batch else "Loss and RMSE across training iterations."
+    draw_panel(draw, rect_loss, "Optimization curves", FONT, FONT_SMALL, fill=PANEL, text=TEXT, muted=MUTED, subtitle=loss_subtitle, outline=BORDER)
     draw_panel(draw, rect_param, "Parameter convergence", FONT, FONT_SMALL, fill=PANEL, text=TEXT, muted=MUTED, subtitle="Ground truth, initial, and fitted parameter values.", outline=BORDER)
     draw_panel(draw, rect_tip, "Tip trajectory overlay", FONT, FONT_SMALL, fill=PANEL, text=TEXT, muted=MUTED, subtitle="World-space x-z tip trajectories for GT, init, and fit.", outline=BORDER)
     draw_panel(draw, rect_text, "Key metrics", FONT, FONT_SMALL, fill=PANEL, text=TEXT, muted=MUTED, subtitle="Compact summary from the result JSON.", outline=BORDER)
 
     if hist:
         iters = np.arange(len(hist), dtype=float)
-        losses = np.array([h.get("loss", h.get("best_loss")) for h in hist], dtype=float)
-        rmses = np.array([h.get("rmse", h.get("best_rmse")) for h in hist], dtype=float)
-        loss_bounds = (0.0, max(1.0, float(iters[-1])), min(float(losses.min()), float(rmses.min())), max(float(losses.max()), float(rmses.max())))
         plot_loss = draw_axes(draw, rect_loss, "iteration", "metric value")
-        draw_polyline(draw, iters, losses, loss_bounds, plot_loss, COLORS["Loss"])
-        draw_polyline(draw, iters, rmses, loss_bounds, plot_loss, COLORS["RMSE"])
-        draw.text((plot_loss[0] + 10, plot_loss[1] + 10), "Loss", fill=COLORS["Loss"], font=FONT_SMALL)
-        draw.text((plot_loss[0] + 70, plot_loss[1] + 10), "RMSE", fill=COLORS["RMSE"], font=FONT_SMALL)
+        if is_batch:
+            current_best = np.array([h["best_loss"] for h in hist], dtype=float)
+            best_so_far = np.minimum.accumulate(current_best)
+            series = [
+                ("Current best", current_best, (231, 76, 60)),
+                ("Best so far", best_so_far, (52, 152, 219)),
+            ]
+            if "mean_loss" in hist[0]:
+                series.append(("Mean", np.array([h["mean_loss"] for h in hist], dtype=float), (142, 68, 173)))
+            if "median_loss" in hist[0]:
+                series.append(("Median", np.array([h["median_loss"] for h in hist], dtype=float), (46, 204, 113)))
+            if "worst_loss" in hist[0]:
+                series.append(("Worst", np.array([h["worst_loss"] for h in hist], dtype=float), (241, 196, 15)))
+            finite_values = np.concatenate([vals[np.isfinite(vals)] for _, vals, _ in series if np.isfinite(vals).any()])
+            ymin = float(np.min(finite_values)) if finite_values.size else 0.0
+            ymax = float(np.max(finite_values)) if finite_values.size else 1.0
+            pad = max(1e-6, 0.05 * max(1e-6, ymax - ymin))
+            loss_bounds = (0.0, max(1.0, float(iters[-1])), ymin - pad, ymax + pad)
+            legend_x = plot_loss[0] + 10
+            legend_y = plot_loss[1] + 10
+            for label, values, color in series:
+                draw_polyline(draw, iters, values, loss_bounds, plot_loss, color)
+                draw.text((legend_x, legend_y), label, fill=color, font=FONT_SMALL)
+                legend_y += 18
+        else:
+            losses = np.array([h.get("loss", h.get("best_loss")) for h in hist], dtype=float)
+            rmses = np.array([h.get("rmse", h.get("best_rmse")) for h in hist], dtype=float)
+            finite_values = np.concatenate([arr[np.isfinite(arr)] for arr in [losses, rmses] if np.isfinite(arr).any()])
+            ymin = float(np.min(finite_values)) if finite_values.size else 0.0
+            ymax = float(np.max(finite_values)) if finite_values.size else 1.0
+            pad = max(1e-6, 0.05 * max(1e-6, ymax - ymin))
+            loss_bounds = (0.0, max(1.0, float(iters[-1])), ymin - pad, ymax + pad)
+            draw_polyline(draw, iters, losses, loss_bounds, plot_loss, COLORS["Loss"])
+            draw_polyline(draw, iters, rmses, loss_bounds, plot_loss, COLORS["RMSE"])
+            draw.text((plot_loss[0] + 10, plot_loss[1] + 10), "Loss", fill=COLORS["Loss"], font=FONT_SMALL)
+            draw.text((plot_loss[0] + 70, plot_loss[1] + 10), "RMSE", fill=COLORS["RMSE"], font=FONT_SMALL)
 
         param_histories = []
         for name in fit_params:

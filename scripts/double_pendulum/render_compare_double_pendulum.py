@@ -2,14 +2,34 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parents[1]
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from worst_batch_init_common import maybe_apply_worst_initial
 
 
 def run(cmd: list[str], *, cwd: Path, env: dict[str, str]) -> None:
     subprocess.run(cmd, check=True, cwd=cwd, env=env)
+
+
+def maybe_prepare_worst_init_result(result_json: Path) -> Path:
+    data = json.loads(result_json.read_text())
+    updated = maybe_apply_worst_initial(data, result_json=result_json)
+    if updated is data:
+        return result_json
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="double_pendulum_batch_compare_"))
+    tmp_json = tmp_dir / result_json.name
+    tmp_json.write_text(json.dumps(updated, indent=2))
+    return tmp_json
 
 
 def main():
@@ -30,6 +50,7 @@ def main():
     output_dir = args.output_dir
     env = dict(os.environ)
     env["PYTHONPATH"] = str(root)
+    render_result_json = maybe_prepare_worst_init_result(args.result_json)
 
     view_dirs = {
         "gt": output_dir / "gt",
@@ -43,7 +64,7 @@ def main():
                 str(python),
                 str(render_script),
                 "--result-json",
-                str(args.result_json),
+                str(render_result_json),
                 "--variant",
                 variant,
                 "--label",

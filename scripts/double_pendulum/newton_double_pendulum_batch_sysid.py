@@ -155,7 +155,8 @@ def run(args):
         snippets=snippets,
         dt=dt,
     )
-    initial_best_idx = int(np.argmin(initial_losses))
+    initial_safe_losses = np.where(np.isfinite(initial_losses), initial_losses, np.inf)
+    initial_best_idx = int(np.argmin(initial_safe_losses))
     best = {"param_values": raw_params[initial_best_idx].copy(), "metrics": initial_metrics[initial_best_idx], "env_index": initial_best_idx, "iteration": -1}
 
     beta1 = 0.9
@@ -170,17 +171,21 @@ def run(args):
             snippets=snippets,
             dt=dt,
         )
-        best_idx = int(np.argmin(env_loss))
-        if env_loss[best_idx] < best["metrics"]["loss"]:
+        safe_env_loss = np.where(np.isfinite(env_loss), env_loss, np.inf)
+        safe_env_rmse = np.where(np.isfinite(env_rmse), env_rmse, np.inf)
+        safe_env_grad = np.nan_to_num(env_grad, nan=0.0, posinf=args.grad_clip, neginf=-args.grad_clip)
+        best_idx = int(np.argmin(safe_env_loss))
+        if np.isfinite(safe_env_loss[best_idx]) and safe_env_loss[best_idx] < best["metrics"]["loss"]:
             best = {"param_values": raw_params[best_idx].copy(), "metrics": metrics[best_idx], "env_index": best_idx, "iteration": it}
-        pop = compute_population_metrics(raw_params, target_params, env_loss, args.collapse_tol)
+        pop = compute_population_metrics(raw_params, target_params, safe_env_loss, args.collapse_tol)
         best_params = {name: float(raw_params[best_idx, i]) for i, name in enumerate(fit_params)}
         history.append(
             {
                 "iteration": it,
                 "best_env_index": best_idx,
-                "best_loss": float(env_loss[best_idx]),
-                "best_rmse": float(env_rmse[best_idx]),
+                "best_loss": float(safe_env_loss[best_idx]),
+                "mean_loss": float(np.mean(safe_env_loss)),
+                "best_rmse": float(safe_env_rmse[best_idx]),
                 "best_param_values": best_params,
                 "median_loss": pop.median_env_loss,
                 "worst_loss": pop.worst_env_loss,
@@ -197,9 +202,9 @@ def run(args):
         if "snippet_metrics" in metrics[best_idx]:
             history[-1]["best_snippet_metrics"] = metrics[best_idx]["snippet_metrics"]
         best_status = " ".join(f"{name}={raw_params[best_idx, i]:.6f}" for i, name in enumerate(fit_params))
-        print(f"iter={it:03d} best_loss={env_loss[best_idx]:.6e} median_loss={pop.median_env_loss:.6e} best_rmse={env_rmse[best_idx]:.6e} {best_status}")
+        print(f"iter={it:03d} best_loss={safe_env_loss[best_idx]:.6e} median_loss={pop.median_env_loss:.6e} best_rmse={safe_env_rmse[best_idx]:.6e} {best_status}")
 
-        grad = np.clip(env_grad, -args.grad_clip, args.grad_clip)
+        grad = np.clip(safe_env_grad, -args.grad_clip, args.grad_clip)
         moment1 = beta1 * moment1 + (1.0 - beta1) * grad
         moment2 = beta2 * moment2 + (1.0 - beta2) * (grad * grad)
         m_hat = moment1 / (1.0 - beta1 ** (it + 1))
@@ -233,8 +238,9 @@ def run(args):
         snippets=snippets,
         dt=dt,
     )
-    final_best_idx = int(np.argmin(final_losses))
-    if final_losses[final_best_idx] < best["metrics"]["loss"]:
+    finite_final_losses = np.where(np.isfinite(final_losses), final_losses, np.inf)
+    final_best_idx = int(np.argmin(finite_final_losses))
+    if np.isfinite(finite_final_losses[final_best_idx]) and finite_final_losses[final_best_idx] < best["metrics"]["loss"]:
         best = {"param_values": raw_params[final_best_idx].copy(), "metrics": final_metrics_all[final_best_idx], "env_index": final_best_idx, "iteration": args.iters}
 
     init_param_values = init_raw_params[initial_best_idx].copy()
